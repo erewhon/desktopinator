@@ -10,3 +10,5 @@ calloop = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
+rustvncserver = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"] }
