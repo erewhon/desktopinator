@@ -10,7 +10,12 @@ LOGFILE=$(mktemp /tmp/desktopinator.XXXXXX.log)
 echo ":: starting compositor (log: $LOGFILE)"
 
 # Start compositor in background, capture output to find the socket name
-cargo run 2>&1 | tee "$LOGFILE" &
+# Pass --headless to desktopinator if HEADLESS=1 is set
+DINATOR_ARGS=()
+if [ "${HEADLESS:-}" = "1" ]; then
+    DINATOR_ARGS+=(--headless)
+fi
+cargo run -- "${DINATOR_ARGS[@]}" 2>&1 | tee "$LOGFILE" &
 COMPOSITOR_PID=$!
 trap 'echo ":: shutting down"; kill $COMPOSITOR_PID 2>/dev/null; wait $COMPOSITOR_PID 2>/dev/null; rm -f "$LOGFILE"' EXIT
 

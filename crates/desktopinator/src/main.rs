@@ -8,7 +8,6 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer};
-use smithay::backend::winit::{self, WinitEvent};
 use smithay::desktop::space::SpaceRenderElements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
@@ -78,6 +77,43 @@ impl RenderElement<GlesRenderer> for OutputRenderElements {
     }
 }
 
+/// Build the render element list: space elements + focus border.
+fn build_render_elements(
+    renderer: &mut GlesRenderer,
+    state: &DinatorState,
+    output: &Output,
+) -> Option<Vec<OutputRenderElements>> {
+    let space_elements: Vec<SpaceElements> =
+        match state.space.render_elements_for_output(renderer, output, 1.0) {
+            Ok(elements) => elements,
+            Err(_) => return None,
+        };
+
+    let mut elements: Vec<OutputRenderElements> = space_elements
+        .into_iter()
+        .map(OutputRenderElements::Space)
+        .collect();
+
+    // Add focus indicator border behind the focused window
+    let border_width = 2;
+    let border_color = [0.4f32, 0.6, 0.9, 1.0]; // blue
+    if let Some(focused) = state.focused_window() {
+        if let Some(geo) = state.space.element_geometry(focused) {
+            let buf = SolidColorBuffer::new(
+                (geo.size.w + 2 * border_width, geo.size.h + 2 * border_width),
+                border_color,
+            );
+            let loc: Point<i32, Physical> =
+                (geo.loc.x - border_width, geo.loc.y - border_width).into();
+            elements.push(OutputRenderElements::Border(
+                SolidColorRenderElement::from_buffer(&buf, loc, 1.0, 1.0, Kind::Unspecified),
+            ));
+        }
+    }
+
+    Some(elements)
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -86,7 +122,19 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    info!("starting desktopinator");
+    let headless = std::env::args().any(|a| a == "--headless");
+
+    if headless {
+        info!("starting desktopinator (headless)");
+        run_headless()
+    } else {
+        info!("starting desktopinator (winit)");
+        run_winit()
+    }
+}
+
+fn run_winit() -> anyhow::Result<()> {
+    use smithay::backend::winit::{self, WinitEvent};
 
     // Initialize winit backend BEFORE creating our wayland socket.
     // Winit connects to the host compositor as a client -- if we set
@@ -141,13 +189,8 @@ fn main() -> anyhow::Result<()> {
     let display_handle = display.handle();
     let mut state = DinatorState::new(display, event_loop.get_signal());
 
-    // Register the output as a Wayland global so clients can see it
     output.create_global::<DinatorState>(&display_handle);
-
-    // Add output to the space
     state.space.map_output(&output, (0, 0));
-
-    // Initialize keyboard (US layout as default) and pointer
     state.seat.add_keyboard(Default::default(), 200, 25)?;
     state.seat.add_pointer();
 
@@ -172,7 +215,6 @@ fn main() -> anyhow::Result<()> {
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut last_output_size = backend.window_size();
 
-    // Insert the winit event source
     event_loop
         .handle()
         .insert_source(winit_evt_loop, move |event, _, state| match event {
@@ -194,50 +236,14 @@ fn main() -> anyhow::Result<()> {
                 let size = backend.window_size();
                 let damage = Rectangle::new((0, 0).into(), size);
 
-                // Scope the renderer borrow so backend.submit() can borrow mutably after
                 {
                     let Ok((renderer, mut framebuffer)) = backend.bind() else {
                         return;
                     };
 
-                    let space_elements: Vec<
-                        SpaceRenderElements<
-                            GlesRenderer,
-                            WaylandSurfaceRenderElement<GlesRenderer>,
-                        >,
-                    > = match state.space.render_elements_for_output(renderer, &output, 1.0) {
-                        Ok(elements) => elements,
-                        Err(_) => return,
+                    let Some(elements) = build_render_elements(renderer, state, &output) else {
+                        return;
                     };
-
-                    // Build combined element list: space elements on top, focus border behind
-                    let mut elements: Vec<OutputRenderElements> = space_elements
-                        .into_iter()
-                        .map(OutputRenderElements::Space)
-                        .collect();
-
-                    // Add focus indicator border behind the focused window
-                    let border_width = 2;
-                    let border_color = [0.4f32, 0.6, 0.9, 1.0]; // blue
-                    if let Some(focused) = state.focused_window() {
-                        if let Some(geo) = state.space.element_geometry(focused) {
-                            let buf = SolidColorBuffer::new(
-                                (geo.size.w + 2 * border_width, geo.size.h + 2 * border_width),
-                                border_color,
-                            );
-                            let loc: Point<i32, Physical> =
-                                (geo.loc.x - border_width, geo.loc.y - border_width).into();
-                            elements.push(OutputRenderElements::Border(
-                                SolidColorRenderElement::from_buffer(
-                                    &buf,
-                                    loc,
-                                    1.0,
-                                    1.0,
-                                    Kind::Unspecified,
-                                ),
-                            ));
-                        }
-                    }
 
                     let _ = damage_tracker.render_output(
                         renderer,
@@ -257,8 +263,6 @@ fn main() -> anyhow::Result<()> {
                 });
 
                 state.space.refresh();
-
-                // Request another frame so we continuously redraw
                 backend.window().request_redraw();
             }
             WinitEvent::CloseRequested => {
@@ -272,9 +276,145 @@ fn main() -> anyhow::Result<()> {
 
     event_loop
         .run(Duration::from_millis(16), &mut state, |state| {
-            // SAFETY: dispatch_clients borrows Display mutably and passes state
-            // to the Wayland protocol handlers. We know state won't be dropped
-            // and the display won't be accessed reentrantly during dispatch.
+            let display_ptr = &mut state.display as *mut Display<DinatorState>;
+            unsafe { &mut *display_ptr }.dispatch_clients(state).unwrap();
+            state.display.flush_clients().unwrap();
+        })
+        .context("event loop error")?;
+
+    info!("shutting down");
+    Ok(())
+}
+
+fn run_headless() -> anyhow::Result<()> {
+    use smithay::backend::egl::context::EGLContext;
+    use smithay::backend::egl::native::EGLSurfacelessDisplay;
+    use smithay::backend::egl::EGLDisplay;
+    use smithay::backend::renderer::gles::GlesRenderbuffer;
+    use smithay::backend::renderer::{Bind, Offscreen};
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    use smithay::backend::allocator::Fourcc;
+    use smithay::utils::Size;
+
+    let width = 1920;
+    let height = 1080;
+
+    // Create EGL display without a window
+    let egl_display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
+        .context("failed to create EGL surfaceless display")?;
+    let egl_context =
+        EGLContext::new(&egl_display).context("failed to create EGL context")?;
+    let mut renderer = unsafe { GlesRenderer::new(egl_context) }
+        .map_err(|e| anyhow::anyhow!("failed to create GlesRenderer: {e:?}"))?;
+
+    info!("headless GlesRenderer initialized");
+
+    // Create offscreen renderbuffer
+    let mut renderbuffer: GlesRenderbuffer =
+        renderer.create_buffer(Fourcc::Argb8888, Size::from((width, height)))
+            .map_err(|e| anyhow::anyhow!("failed to create renderbuffer: {e:?}"))?;
+
+    info!(width, height, "offscreen renderbuffer created");
+
+    let mut event_loop: EventLoop<DinatorState> =
+        EventLoop::try_new().context("failed to create event loop")?;
+
+    let display = Display::new().context("failed to create wayland display")?;
+
+    let listening_socket =
+        ListeningSocket::bind_auto("wayland", 0..33).context("failed to bind wayland socket")?;
+    let socket_name = listening_socket
+        .socket_name()
+        .context("no socket name")?
+        .to_string_lossy()
+        .into_owned();
+    info!(socket = %socket_name, "wayland socket listening");
+
+    std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+
+    let mode = Mode {
+        size: (width as i32, height as i32).into(),
+        refresh: 60_000,
+    };
+    let output = Output::new(
+        "headless-0".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "desktopinator".into(),
+            model: "headless".into(),
+        },
+    );
+    output.change_current_state(Some(mode), Some(Transform::Normal), None, Some((0, 0).into()));
+    output.set_preferred(mode);
+
+    let display_handle = display.handle();
+    let mut state = DinatorState::new(display, event_loop.get_signal());
+
+    output.create_global::<DinatorState>(&display_handle);
+    state.space.map_output(&output, (0, 0));
+    state.seat.add_keyboard(Default::default(), 200, 25)?;
+    state.seat.add_pointer();
+
+    // Accept new clients
+    event_loop
+        .handle()
+        .insert_source(
+            Generic::new(listening_socket, Interest::READ, calloop::Mode::Level),
+            |_, socket, state| {
+                if let Some(stream) = socket.accept()? {
+                    let client_state = Arc::new(dinator_core::ClientState::default());
+                    state
+                        .display_handle
+                        .insert_client(stream, client_state)
+                        .unwrap();
+                }
+                Ok(PostAction::Continue)
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("failed to insert socket source: {e}"))?;
+
+    let mut damage_tracker = OutputDamageTracker::from_output(&output);
+
+    // Timer-based redraw at ~60fps
+    let timer = Timer::immediate();
+    event_loop
+        .handle()
+        .insert_source(timer, move |_, _, state| {
+            // Render
+            {
+                let mut target = renderer
+                    .bind(&mut renderbuffer)
+                    .expect("failed to bind renderbuffer");
+
+                if let Some(elements) = build_render_elements(&mut renderer, state, &output) {
+                    let _ = damage_tracker.render_output(
+                        &mut renderer,
+                        &mut target,
+                        0,
+                        &elements,
+                        [0.1, 0.1, 0.1, 1.0],
+                    );
+                }
+            }
+
+            // Send frame callbacks to clients
+            state.space.elements().for_each(|window| {
+                window.send_frame(&output, state.start_time.elapsed(), None, |_, _| {
+                    Some(output.clone())
+                });
+            });
+
+            state.space.refresh();
+
+            TimeoutAction::ToDuration(Duration::from_millis(16))
+        })
+        .map_err(|e| anyhow::anyhow!("failed to insert timer source: {e}"))?;
+
+    info!("entering event loop (headless) -- launch clients with WAYLAND_DISPLAY={socket_name}");
+
+    event_loop
+        .run(Duration::from_millis(16), &mut state, |state| {
             let display_ptr = &mut state.display as *mut Display<DinatorState>;
             unsafe { &mut *display_ptr }.dispatch_clients(state).unwrap();
             state.display.flush_clients().unwrap();
