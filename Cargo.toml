@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/desktopinator",
+    "crates/dinator-core",
+    "crates/dinator-tiling",
+]
+
+[workspace.dependencies]
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_winit",
+    "backend_egl",
+    "renderer_gl",
+    "desktop",
+    "wayland_frontend",
+] }
+calloop = { version = "0.14", features = ["executor"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"

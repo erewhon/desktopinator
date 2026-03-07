@@ -1,0 +1,12 @@
+[package]
+name = "desktopinator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dinator-core = { path = "../dinator-core" }
+smithay = { workspace = true }
+calloop = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

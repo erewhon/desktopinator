@@ -1,0 +1,11 @@
+[package]
+name = "dinator-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+smithay = { workspace = true }
+calloop = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+dinator-tiling = { path = "../dinator-tiling" }
