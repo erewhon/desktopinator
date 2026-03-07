@@ -1,0 +1,362 @@
+[
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Write",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Fetch",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude needs your permission to use Bash",
+    "notification_type": "permission_prompt"
+  },
+  {
+    "session_id": "f3170278-68c2-4977-9520-d456dc9897d3",
+    "transcript_path": "/home/erewhon/.claude/projects/-home-erewhon-Projects-erewhon-desktopinator/f3170278-68c2-4977-9520-d456dc9897d3.jsonl",
+    "cwd": "/home/erewhon/Projects/erewhon/desktopinator",
+    "hook_event_name": "Notification",
+    "message": "Claude is waiting for your input",
+    "notification_type": "idle_prompt"
+  }
+]
