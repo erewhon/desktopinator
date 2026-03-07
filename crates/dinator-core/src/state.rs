@@ -91,22 +91,9 @@ impl DinatorState {
             height: geo.size.h,
         };
 
-        info!(
-            area_x = area.x, area_y = area.y,
-            area_w = area.width, area_h = area.height,
-            windows = self.window_order.len(),
-            "retile area"
-        );
-
         let placements = self.layout.arrange(&self.window_order, area);
 
         for placement in placements {
-            info!(
-                id = placement.id.0,
-                x = placement.rect.x, y = placement.rect.y,
-                w = placement.rect.width, h = placement.rect.height,
-                "placement"
-            );
             if let Some(window) = self.window_map.get(&placement.id) {
                 let loc: smithay::utils::Point<i32, smithay::utils::Logical> =
                     (placement.rect.x, placement.rect.y).into();
@@ -119,6 +106,93 @@ impl DinatorState {
                     });
                     toplevel.send_pending_configure();
                 }
+            }
+        }
+    }
+
+    /// Returns the currently focused window, if any.
+    pub fn focused_window(&self) -> Option<&Window> {
+        let keyboard = self.seat.get_keyboard()?;
+        let surface = keyboard.current_focus()?;
+        let id = self.surface_to_id.get(&surface)?;
+        self.window_map.get(id)
+    }
+
+    /// Close the currently focused window.
+    pub fn close_focused_window(&mut self) {
+        let keyboard = self.seat.get_keyboard().unwrap();
+        let focus = keyboard.current_focus();
+        if let Some(surface) = focus {
+            if let Some(id) = self.surface_to_id.get(&surface) {
+                if let Some(window) = self.window_map.get(id) {
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.send_close();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Focus the next window in the window order.
+    pub fn focus_next(&mut self) {
+        self.focus_cycle(1);
+    }
+
+    /// Focus the previous window in the window order.
+    pub fn focus_prev(&mut self) {
+        self.focus_cycle(-1);
+    }
+
+    /// Swap the focused window with the master (first) position.
+    pub fn swap_master(&mut self) {
+        if self.window_order.len() < 2 {
+            return;
+        }
+
+        let keyboard = self.seat.get_keyboard().unwrap();
+        let current_focus = keyboard.current_focus();
+
+        let focused_idx = current_focus
+            .as_ref()
+            .and_then(|surface| self.surface_to_id.get(surface))
+            .and_then(|id| self.window_order.iter().position(|w| w == id));
+
+        if let Some(idx) = focused_idx {
+            if idx != 0 {
+                self.window_order.swap(0, idx);
+                let output = self.space.outputs().next().cloned();
+                if let Some(output) = output {
+                    self.retile(&output);
+                }
+            }
+        }
+    }
+
+    fn focus_cycle(&mut self, direction: i32) {
+        if self.window_order.len() < 2 {
+            return;
+        }
+
+        let keyboard = self.seat.get_keyboard().unwrap();
+        let current_focus = keyboard.current_focus();
+
+        let current_idx = current_focus
+            .as_ref()
+            .and_then(|surface| self.surface_to_id.get(surface))
+            .and_then(|id| self.window_order.iter().position(|w| w == id))
+            .unwrap_or(0);
+
+        let len = self.window_order.len() as i32;
+        let next_idx = ((current_idx as i32 + direction).rem_euclid(len)) as usize;
+        let next_id = self.window_order[next_idx];
+
+        if let Some(window) = self.window_map.get(&next_id) {
+            let window = window.clone();
+            self.space.raise_element(&window, true);
+            if let Some(toplevel) = window.toplevel() {
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
+                info!(idx = next_idx, "focus cycled");
             }
         }
     }

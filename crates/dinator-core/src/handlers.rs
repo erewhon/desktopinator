@@ -57,15 +57,6 @@ impl CompositorHandler for DinatorState {
             .cloned();
 
         if let Some(window) = found {
-            let geo = window.geometry();
-            let bbox = window.bbox();
-            info!(
-                geo_x = geo.loc.x, geo_y = geo.loc.y,
-                geo_w = geo.size.w, geo_h = geo.size.h,
-                bbox_x = bbox.loc.x, bbox_y = bbox.loc.y,
-                bbox_w = bbox.size.w, bbox_h = bbox.size.h,
-                "window commit"
-            );
             window.on_commit();
         }
     }
@@ -131,6 +122,21 @@ impl XdgShellHandler for DinatorState {
             let output = self.space.outputs().next().cloned();
             if let Some(output) = output {
                 self.retile(&output);
+            }
+
+            // Focus the last window in the order, if any remain
+            if let Some(&next_id) = self.window_order.last() {
+                if let Some(window) = self.window_map.get(&next_id) {
+                    if let Some(toplevel) = window.toplevel() {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let keyboard = self.seat.get_keyboard().unwrap();
+                        keyboard.set_focus(
+                            self,
+                            Some(toplevel.wl_surface().clone()),
+                            serial,
+                        );
+                    }
+                }
             }
         }
     }

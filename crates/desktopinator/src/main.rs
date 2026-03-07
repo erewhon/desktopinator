@@ -3,18 +3,80 @@ use std::time::Duration;
 
 use anyhow::Context;
 use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
-use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::element::Kind;
+use smithay::backend::renderer::element::RenderElement;
+use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer};
 use smithay::backend::winit::{self, WinitEvent};
 use smithay::desktop::space::SpaceRenderElements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, PostAction};
 use smithay::reexports::wayland_server::{Display, ListeningSocket};
-use smithay::utils::{Rectangle, Transform};
+use smithay::utils::{Physical, Point, Rectangle, Transform};
 use tracing::info;
 
 use dinator_core::DinatorState;
+
+type SpaceElements = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>;
+
+enum OutputRenderElements {
+    Space(SpaceElements),
+    Border(SolidColorRenderElement),
+}
+
+impl smithay::backend::renderer::element::Element for OutputRenderElements {
+    fn id(&self) -> &smithay::backend::renderer::element::Id {
+        match self {
+            Self::Space(e) => e.id(),
+            Self::Border(e) => e.id(),
+        }
+    }
+    fn current_commit(&self) -> smithay::backend::renderer::utils::CommitCounter {
+        match self {
+            Self::Space(e) => e.current_commit(),
+            Self::Border(e) => e.current_commit(),
+        }
+    }
+    fn geometry(&self, scale: smithay::utils::Scale<f64>) -> Rectangle<i32, Physical> {
+        match self {
+            Self::Space(e) => e.geometry(scale),
+            Self::Border(e) => e.geometry(scale),
+        }
+    }
+    fn src(&self) -> Rectangle<f64, smithay::utils::Buffer> {
+        match self {
+            Self::Space(e) => e.src(),
+            Self::Border(e) => e.src(),
+        }
+    }
+}
+
+impl RenderElement<GlesRenderer> for OutputRenderElements {
+    fn draw<'a>(
+        &self,
+        frame: &mut GlesFrame<'a, '_>,
+        src: Rectangle<f64, smithay::utils::Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), smithay::backend::renderer::gles::GlesError> {
+        match self {
+            Self::Space(e) => e.draw(frame, src, dst, damage, opaque_regions),
+            Self::Border(e) => {
+                <SolidColorRenderElement as RenderElement<GlesRenderer>>::draw(
+                    e,
+                    frame,
+                    src,
+                    dst,
+                    damage,
+                    opaque_regions,
+                )
+            }
+        }
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -138,7 +200,7 @@ fn main() -> anyhow::Result<()> {
                         return;
                     };
 
-                    let elements: Vec<
+                    let space_elements: Vec<
                         SpaceRenderElements<
                             GlesRenderer,
                             WaylandSurfaceRenderElement<GlesRenderer>,
@@ -147,6 +209,35 @@ fn main() -> anyhow::Result<()> {
                         Ok(elements) => elements,
                         Err(_) => return,
                     };
+
+                    // Build combined element list: space elements on top, focus border behind
+                    let mut elements: Vec<OutputRenderElements> = space_elements
+                        .into_iter()
+                        .map(OutputRenderElements::Space)
+                        .collect();
+
+                    // Add focus indicator border behind the focused window
+                    let border_width = 2;
+                    let border_color = [0.4f32, 0.6, 0.9, 1.0]; // blue
+                    if let Some(focused) = state.focused_window() {
+                        if let Some(geo) = state.space.element_geometry(focused) {
+                            let buf = SolidColorBuffer::new(
+                                (geo.size.w + 2 * border_width, geo.size.h + 2 * border_width),
+                                border_color,
+                            );
+                            let loc: Point<i32, Physical> =
+                                (geo.loc.x - border_width, geo.loc.y - border_width).into();
+                            elements.push(OutputRenderElements::Border(
+                                SolidColorRenderElement::from_buffer(
+                                    &buf,
+                                    loc,
+                                    1.0,
+                                    1.0,
+                                    Kind::Unspecified,
+                                ),
+                            ));
+                        }
+                    }
 
                     let _ = damage_tracker.render_output(
                         renderer,

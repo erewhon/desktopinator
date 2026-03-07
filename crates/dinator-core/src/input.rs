@@ -1,8 +1,9 @@
 use smithay::backend::input::{
-    Axis, ButtonState, InputBackend, InputEvent, KeyboardKeyEvent, PointerAxisEvent,
+    Axis, ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
     PointerButtonEvent, PointerMotionAbsoluteEvent,
 };
 use smithay::desktop::WindowSurfaceType;
+use smithay::input::keyboard::keysyms;
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::SERIAL_COUNTER;
@@ -10,6 +11,15 @@ use smithay::utils::SERIAL_COUNTER;
 use tracing::info;
 
 use crate::state::DinatorState;
+
+enum KeyAction {
+    LaunchTerminal,
+    CloseWindow,
+    FocusNext,
+    FocusPrev,
+    SwapMaster,
+    Quit,
+}
 
 impl DinatorState {
     pub fn handle_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
@@ -25,22 +35,73 @@ impl DinatorState {
     }
 
     fn handle_keyboard<B: InputBackend>(&mut self, event: impl KeyboardKeyEvent<B>) {
-        info!(keycode = ?event.key_code(), "keyboard event");
         let serial = SERIAL_COUNTER.next_serial();
         let time = event.time_msec();
         let keycode = event.key_code();
-        let state = event.state();
+        let press_state = event.state();
 
         let keyboard = self.seat.get_keyboard().unwrap();
 
-        keyboard.input::<(), _>(
+        let action = keyboard.input::<Option<KeyAction>, _>(
             self,
             keycode,
-            state,
+            press_state,
             serial,
             time,
-            |_state, _modifiers, _keysym| FilterResult::Forward,
+            |_state, modifiers, keysym| {
+                // Use Alt as the compositor modifier. Super conflicts with
+                // host compositors (KDE, GNOME) that grab it for their own use,
+                // causing stuck modifier state in nested sessions.
+                if !modifiers.alt {
+                    return FilterResult::Forward;
+                }
+
+                let sym = keysym.modified_sym();
+                match sym.raw() {
+                    keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
+                        if press_state == KeyState::Pressed {
+                            let action = match sym.raw() {
+                                keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                keysyms::KEY_q => KeyAction::CloseWindow,
+                                keysyms::KEY_Q => KeyAction::Quit,
+                                keysyms::KEY_j => KeyAction::FocusNext,
+                                keysyms::KEY_k => KeyAction::FocusPrev,
+                                keysyms::KEY_space => KeyAction::SwapMaster,
+                                _ => unreachable!(),
+                            };
+                            FilterResult::Intercept(Some(action))
+                        } else {
+                            // Swallow release too so client doesn't see orphaned release
+                            FilterResult::Intercept(None)
+                        }
+                    }
+                    _ => FilterResult::Forward,
+                }
+            },
         );
+
+        if let Some(Some(action)) = action {
+            match action {
+                KeyAction::LaunchTerminal => {
+                    info!("keybinding: launch terminal");
+                    if let Err(e) = std::process::Command::new("foot").spawn() {
+                        info!(error = %e, "failed to launch foot");
+                    }
+                }
+                KeyAction::CloseWindow => {
+                    info!("keybinding: close window");
+                    self.close_focused_window();
+                }
+                KeyAction::FocusNext => self.focus_next(),
+                KeyAction::FocusPrev => self.focus_prev(),
+                KeyAction::SwapMaster => self.swap_master(),
+                KeyAction::Quit => {
+                    info!("keybinding: quit");
+                    self.loop_signal.stop();
+                }
+            }
+        }
     }
 
     fn handle_pointer_motion_absolute<B: InputBackend>(
@@ -61,27 +122,16 @@ impl DinatorState {
         let under = self.space.element_under(pos);
         let surface_under = under.and_then(|(window, loc)| {
             let rel = (pos.x - loc.x as f64, pos.y - loc.y as f64);
-            let result = window.surface_under(rel, WindowSurfaceType::ALL);
-            if result.is_none() {
-                let geo = window.geometry();
-                info!(
-                    px = pos.x, py = pos.y,
-                    wloc_x = loc.x, wloc_y = loc.y,
-                    rel_x = rel.0, rel_y = rel.1,
-                    geo_x = geo.loc.x, geo_y = geo.loc.y,
-                    geo_w = geo.size.w, geo_h = geo.size.h,
-                    "element found but surface_under returned None"
-                );
-            }
-            result.map(|(s, offset)| {
-                (
-                    s,
-                    smithay::utils::Point::<f64, smithay::utils::Logical>::from((
-                        loc.x as f64 + offset.x as f64,
-                        loc.y as f64 + offset.y as f64,
-                    )),
-                )
-            })
+            window.surface_under(rel, WindowSurfaceType::ALL)
+                .map(|(s, offset)| {
+                    (
+                        s,
+                        smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                            loc.x as f64 + offset.x as f64,
+                            loc.y as f64 + offset.y as f64,
+                        )),
+                    )
+                })
         });
 
         pointer.motion(
@@ -115,9 +165,7 @@ impl DinatorState {
         // Click to focus
         if event.state() == ButtonState::Pressed {
             let loc = pointer.current_location();
-            info!(x = loc.x, y = loc.y, "pointer click");
             if let Some((window, _)) = self.space.element_under(loc) {
-                info!("click hit window");
                 let window = window.clone();
                 self.space.raise_element(&window, true);
                 if let Some(toplevel) = window.toplevel() {
