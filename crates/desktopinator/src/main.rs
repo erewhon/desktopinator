@@ -319,9 +319,11 @@ fn run_winit() -> anyhow::Result<()> {
 }
 
 /// VNC input event sent from the VNC server thread to the compositor event loop.
+#[allow(dead_code)]
 enum VncInputEvent {
     PointerMove { x: u16, y: u16, button_mask: u8 },
     Key { keysym: u32, pressed: bool },
+    ResizeOutput { width: u16, height: u16 },
 }
 
 fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
@@ -364,6 +366,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
         None, // no password
     );
     let vnc_framebuffer = vnc_server.framebuffer().clone();
+    let vnc_server = Arc::new(vnc_server);
 
     // Create a calloop channel to receive VNC input events in the compositor event loop
     let (vnc_input_tx, vnc_input_rx): (channel::Sender<VncInputEvent>, Channel<VncInputEvent>) =
@@ -371,6 +374,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
     // Create a channel to send pixel data to the VNC server's tokio runtime
     let (pixel_tx, mut pixel_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+
+    // Create a channel to send resize commands to the VNC framebuffer (compositor → tokio)
+    let (vnc_resize_tx, mut vnc_resize_rx) = tokio::sync::mpsc::channel::<(u16, u16)>(4);
 
     // Start VNC server + event handler on a tokio runtime in a background thread
     let vnc_input_tx_clone = vnc_input_tx.clone();
@@ -383,6 +389,23 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                 while let Some(pixels) = pixel_rx.recv().await {
                     if let Err(e) = fb.update_from_slice(&pixels).await {
                         tracing::error!("update_from_slice failed: {e}");
+                    }
+                }
+            });
+
+            // Handle framebuffer resize commands from the compositor
+            let fb_resize = vnc_framebuffer.clone();
+            let vnc_server_resize = vnc_server.clone();
+            tokio::spawn(async move {
+                while let Some((w, h)) = vnc_resize_rx.recv().await {
+                    info!(width = w, height = h, "resizing VNC framebuffer");
+                    if let Err(e) = fb_resize.resize(w, h).await {
+                        tracing::error!("VNC framebuffer resize failed: {e}");
+                    } else {
+                        // Disconnect all clients so they reconnect at the new resolution
+                        // (rustvncserver doesn't send DesktopSize pseudo-encoding updates)
+                        info!("disconnecting VNC clients for resolution change");
+                        vnc_server_resize.disconnect_all_clients().await;
                     }
                 }
             });
@@ -421,7 +444,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                 }
             });
 
-            if let Err(e) = vnc_server.listen(vnc_port).await {
+            if let Err(e) = vnc_server.as_ref().listen(vnc_port).await {
                 tracing::error!(error = %e, "VNC server error");
             }
         });
@@ -492,7 +515,13 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("failed to insert socket source: {e}"))?;
 
+    // Pending resolution change, shared between input handler and render timer
+    let pending_resize: Arc<std::sync::Mutex<Option<(u16, u16)>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let pending_resize_input = pending_resize.clone();
+
     // Handle VNC input events in the compositor event loop
+    let output_for_input = output.clone();
     let mut last_button_mask: u8 = 0;
     let mut pressed_keys: std::collections::HashSet<u32> = std::collections::HashSet::new();
     event_loop
@@ -589,6 +618,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                     }
                     last_button_mask = button_mask;
                 }
+                VncInputEvent::ResizeOutput { width, height } => {
+                    info!(width, height, "resolution change requested");
+                    *pending_resize_input.lock().unwrap() = Some((width, height));
+                }
                 VncInputEvent::Key { keysym, pressed } => {
                     let keyboard = state.seat.get_keyboard().unwrap();
                     let serial = SERIAL_COUNTER.next_serial();
@@ -625,7 +658,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                 let sym = ksym.modified_sym();
                                 match sym.raw() {
                                     keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
-                                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
+                                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
+                                    | keysyms::KEY_plus | keysyms::KEY_equal
+                                    | keysyms::KEY_minus => {
                                         if key_state == KeyState::Pressed {
                                             let action = match sym.raw() {
                                                 keysyms::KEY_Return => KeyAction::LaunchTerminal,
@@ -634,6 +669,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                                 keysyms::KEY_j => KeyAction::FocusNext,
                                                 keysyms::KEY_k => KeyAction::FocusPrev,
                                                 keysyms::KEY_space => KeyAction::SwapMaster,
+                                                keysyms::KEY_plus | keysyms::KEY_equal => {
+                                                    KeyAction::ResolutionUp
+                                                }
+                                                keysyms::KEY_minus => KeyAction::ResolutionDown,
                                                 _ => unreachable!(),
                                             };
                                             FilterResult::Intercept(Some(action))
@@ -661,6 +700,28 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                 KeyAction::FocusNext => state.focus_next(),
                                 KeyAction::FocusPrev => state.focus_prev(),
                                 KeyAction::SwapMaster => state.swap_master(),
+                                KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
+                                    let dir = if matches!(action, KeyAction::ResolutionUp) {
+                                        1
+                                    } else {
+                                        -1
+                                    };
+                                    // Get current resolution from output
+                                    if let Some(mode) = output_for_input.current_mode() {
+                                        let (new_w, new_h) = next_resolution(
+                                            mode.size.w as u16,
+                                            mode.size.h as u16,
+                                            dir,
+                                        );
+                                        info!(
+                                            from = %format!("{}x{}", mode.size.w, mode.size.h),
+                                            to = %format!("{new_w}x{new_h}"),
+                                            "resolution change keybinding"
+                                        );
+                                        *pending_resize_input.lock().unwrap() =
+                                            Some((new_w, new_h));
+                                    }
+                                }
                                 KeyAction::Quit => {
                                     info!("keybinding: quit");
                                     state.loop_signal.stop();
@@ -675,6 +736,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let output_for_render = output.clone();
+    let mut current_width = width;
+    let mut current_height = height;
+    let pending_resize_render = pending_resize.clone();
 
     // Timer-based redraw at ~60fps
     let timer = Timer::immediate();
@@ -682,6 +746,56 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
         .handle()
         .insert_source(timer, move |_, _, state| {
             let output = &output_for_render;
+
+            // Check for pending resolution change
+            if let Some((new_w, new_h)) = pending_resize_render.lock().unwrap().take() {
+                if new_w != current_width || new_h != current_height {
+                    info!(
+                        old_w = current_width,
+                        old_h = current_height,
+                        new_w,
+                        new_h,
+                        "applying resolution change"
+                    );
+
+                    // Create new renderbuffer
+                    match renderer
+                        .create_buffer(Fourcc::Abgr8888, Size::from((new_w as i32, new_h as i32)))
+                    {
+                        Ok(new_rb) => {
+                            renderbuffer = new_rb;
+                            current_width = new_w;
+                            current_height = new_h;
+
+                            // Update output mode
+                            let mode = Mode {
+                                size: (new_w as i32, new_h as i32).into(),
+                                refresh: 60_000,
+                            };
+                            output.change_current_state(Some(mode), None, None, None);
+                            output.set_preferred(mode);
+
+                            // Reset damage tracker for new size
+                            damage_tracker = OutputDamageTracker::from_output(output);
+
+                            // Re-tile windows for new resolution
+                            state.retile(output);
+
+                            // Tell VNC to resize its framebuffer
+                            let _ = vnc_resize_tx.try_send((new_w, new_h));
+
+                            info!(
+                                width = new_w,
+                                height = new_h,
+                                "resolution change applied"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("failed to create new renderbuffer: {e:?}");
+                        }
+                    }
+                }
+            }
 
             // Render to offscreen buffer
             {
@@ -701,7 +815,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
                 // Export pixels to VNC framebuffer
                 let region = Rectangle::from_size(
-                    Size::from((width as i32, height as i32)),
+                    Size::from((current_width as i32, current_height as i32)),
                 );
                 if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
                     if let Ok(pixels) = renderer.map_texture(&mapping) {
@@ -748,7 +862,39 @@ enum KeyAction {
     FocusNext,
     FocusPrev,
     SwapMaster,
+    ResolutionUp,
+    ResolutionDown,
     Quit,
+}
+
+/// Common resolutions for cycling through with keybindings.
+const RESOLUTIONS: &[(u16, u16)] = &[
+    (1280, 720),
+    (1366, 768),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+];
+
+fn next_resolution(current_w: u16, current_h: u16, direction: i32) -> (u16, u16) {
+    let current_pixels = current_w as u32 * current_h as u32;
+    if direction > 0 {
+        // Find the next larger resolution
+        RESOLUTIONS
+            .iter()
+            .find(|&&(w, h)| (w as u32 * h as u32) > current_pixels)
+            .copied()
+            .unwrap_or(*RESOLUTIONS.last().unwrap())
+    } else {
+        // Find the next smaller resolution
+        RESOLUTIONS
+            .iter()
+            .rev()
+            .find(|&&(w, h)| (w as u32 * h as u32) < current_pixels)
+            .copied()
+            .unwrap_or(*RESOLUTIONS.first().unwrap())
+    }
 }
 
 /// Convert an X11 keysym to an evdev keycode.
