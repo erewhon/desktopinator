@@ -32,6 +32,11 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use tracing::info;
 
+use smithay::wayland::compositor;
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
+
+use dinator_ipc::IpcEvent;
+
 use crate::state::{ClientState, DinatorState};
 
 // --- Compositor ---
@@ -128,10 +133,23 @@ impl XdgShellHandler for DinatorState {
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().unwrap();
         keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+
+        // Emit IPC event
+        let (app_id, title) = compositor::with_states(surface.wl_surface(), |states| {
+            let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+            let attrs = attrs.map(|d| d.lock().unwrap());
+            (
+                attrs.as_ref().and_then(|a| a.app_id.clone()),
+                attrs.as_ref().and_then(|a| a.title.clone()),
+            )
+        });
+        self.emit_event(IpcEvent::WindowOpened { id: id.0, app_id, title });
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         if let Some(id) = self.surface_to_id.remove(surface.wl_surface()) {
+            self.emit_event(IpcEvent::WindowClosed { id: id.0 });
+
             self.window_order.retain(|w| *w != id);
             if let Some(window) = self.window_map.remove(&id) {
                 self.space.unmap_elem(&window);
@@ -312,7 +330,13 @@ impl SeatHandler for DinatorState {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        if let Some(surface) = focused {
+            if let Some(id) = self.surface_to_id.get(surface) {
+                self.emit_event(IpcEvent::WindowFocused { id: id.0 });
+            }
+        }
+    }
 }
 
 delegate_seat!(DinatorState);

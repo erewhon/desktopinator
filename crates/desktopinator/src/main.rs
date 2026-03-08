@@ -252,7 +252,7 @@ fn run_winit() -> anyhow::Result<()> {
     // IPC server (resize is a no-op in winit mode — window manager controls size)
     let pending_resize_winit: Arc<std::sync::Mutex<Option<(u16, u16)>>> =
         Arc::new(std::sync::Mutex::new(None));
-    let ipc_rx = ipc::start_ipc_server()?;
+    let ipc_rx = ipc::start_ipc_server(state.event_broadcaster.clone())?;
     let output_for_ipc = output.clone();
     event_loop
         .handle()
@@ -549,7 +549,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
     let pending_resize_ipc = pending_resize.clone();
 
     // Start IPC server
-    let ipc_rx = ipc::start_ipc_server()?;
+    let ipc_rx = ipc::start_ipc_server(state.event_broadcaster.clone())?;
     let output_for_ipc = output.clone();
     event_loop
         .handle()
@@ -836,6 +836,11 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                 height = new_h,
                                 "resolution change applied"
                             );
+
+                            state.emit_event(dinator_ipc::IpcEvent::ResolutionChanged {
+                                width: new_w,
+                                height: new_h,
+                            });
                         }
                         Err(e) => {
                             tracing::error!("failed to create new renderbuffer: {e:?}");
@@ -1047,6 +1052,13 @@ fn handle_ipc_command(
                 .collect();
             IpcResponse::Data {
                 data: serde_json::Value::Array(windows),
+            }
+        }
+        IpcCommand::Subscribe => {
+            // Subscribe is handled in the IPC server thread, not here.
+            // If we get here, something is wrong.
+            IpcResponse::Error {
+                message: "subscribe should be handled by IPC server".to_string(),
             }
         }
     }

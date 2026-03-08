@@ -1,7 +1,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::{Arc, Mutex};
 
-use dinator_ipc::{IpcCommand, IpcResponse};
+use dinator_ipc::{IpcCommand, IpcEvent, IpcResponse};
 use smithay::reexports::calloop::channel;
 use tracing::info;
 
@@ -11,9 +12,14 @@ pub struct IpcRequest {
     pub respond: Box<dyn FnOnce(IpcResponse) + Send>,
 }
 
+/// Subscribers: IPC client threads register their sender here.
+pub type EventSubscribers = Arc<Mutex<Vec<std::sync::mpsc::Sender<IpcEvent>>>>;
+
 /// Start the IPC Unix socket listener in a background thread.
 /// Returns a calloop channel receiver that delivers parsed IPC commands.
-pub fn start_ipc_server() -> anyhow::Result<channel::Channel<IpcRequest>> {
+pub fn start_ipc_server(
+    subscribers: EventSubscribers,
+) -> anyhow::Result<channel::Channel<IpcRequest>> {
     let socket_path = dinator_ipc::socket_path();
 
     // Remove stale socket if it exists
@@ -32,8 +38,9 @@ pub fn start_ipc_server() -> anyhow::Result<channel::Channel<IpcRequest>> {
             match stream {
                 Ok(stream) => {
                     let tx = tx.clone();
+                    let subscribers = subscribers.clone();
                     std::thread::spawn(move || {
-                        if let Err(e) = handle_client(stream, tx) {
+                        if let Err(e) = handle_client(stream, tx, subscribers) {
                             tracing::error!("IPC client error: {e}");
                         }
                     });
@@ -51,6 +58,7 @@ pub fn start_ipc_server() -> anyhow::Result<channel::Channel<IpcRequest>> {
 fn handle_client(
     stream: UnixStream,
     tx: channel::Sender<IpcRequest>,
+    subscribers: EventSubscribers,
 ) -> anyhow::Result<()> {
     let reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
@@ -74,6 +82,31 @@ fn handle_client(
                 continue;
             }
         };
+
+        // Handle Subscribe locally — switch to streaming mode
+        if matches!(command, IpcCommand::Subscribe) {
+            // Send OK to confirm subscription
+            let resp = IpcResponse::Ok {
+                message: Some("subscribed".to_string()),
+            };
+            let mut msg = serde_json::to_string(&resp)?;
+            msg.push('\n');
+            writer.write_all(msg.as_bytes())?;
+
+            // Register this connection as a subscriber
+            let (event_tx, event_rx) = std::sync::mpsc::channel::<IpcEvent>();
+            subscribers.lock().unwrap().push(event_tx);
+
+            // Stream events until the client disconnects or the channel closes
+            for event in event_rx {
+                let mut msg = serde_json::to_string(&event)?;
+                msg.push('\n');
+                if writer.write_all(msg.as_bytes()).is_err() {
+                    break; // client disconnected
+                }
+            }
+            return Ok(());
+        }
 
         // Send command to the compositor event loop and wait for response
         let (resp_tx, resp_rx) = std::sync::mpsc::channel::<IpcResponse>();

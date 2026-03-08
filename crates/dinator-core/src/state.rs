@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use smithay::desktop::{Space, Window};
@@ -26,7 +27,12 @@ use smithay::wayland::shm::ShmState;
 
 use tracing::info;
 
+use dinator_ipc::IpcEvent;
 use dinator_tiling::{ColumnLayout, Layout, Rect, WindowId};
+
+/// Thread-safe broadcaster for IPC events.
+/// IPC client threads register their sender here; the compositor emits events.
+pub type EventBroadcaster = Arc<Mutex<Vec<std::sync::mpsc::Sender<IpcEvent>>>>;
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -62,6 +68,9 @@ pub struct DinatorState {
     pub window_order: Vec<WindowId>,
     pub window_map: HashMap<WindowId, Window>,
     pub surface_to_id: HashMap<WlSurface, WindowId>,
+
+    // IPC event broadcasting
+    pub event_broadcaster: EventBroadcaster,
 }
 
 impl DinatorState {
@@ -112,11 +121,19 @@ impl DinatorState {
             window_order: Vec::new(),
             window_map: HashMap::new(),
             surface_to_id: HashMap::new(),
+            event_broadcaster: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn next_window_id() -> WindowId {
         WindowId(NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Broadcast an IPC event to all subscribed clients.
+    /// Removes disconnected subscribers automatically.
+    pub fn emit_event(&self, event: IpcEvent) {
+        let mut subs = self.event_broadcaster.lock().unwrap();
+        subs.retain(|tx| tx.send(event.clone()).is_ok());
     }
 
     /// Re-tile all windows on the given output.

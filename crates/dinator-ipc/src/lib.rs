@@ -27,6 +27,29 @@ pub enum IpcCommand {
     Quit,
     /// List all windows.
     ListWindows,
+    /// Subscribe to compositor events. The connection switches to
+    /// streaming mode: one JSON line per event, no further commands accepted.
+    Subscribe,
+}
+
+/// An event pushed from the compositor to subscribed IPC clients.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "kebab-case")]
+pub enum IpcEvent {
+    /// A new window was opened.
+    WindowOpened {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        app_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+    },
+    /// A window was closed.
+    WindowClosed { id: u64 },
+    /// A window gained focus.
+    WindowFocused { id: u64 },
+    /// The output resolution changed.
+    ResolutionChanged { width: u16, height: u16 },
 }
 
 /// A response from the compositor back to dinatorctl.
