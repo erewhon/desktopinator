@@ -31,6 +31,12 @@ pub enum IpcCommand {
     MasterGrow,
     /// Shrink the master area.
     MasterShrink,
+    /// Set the tiling layout (e.g. "column", "monocle").
+    SetLayout { name: String },
+    /// Toggle the focused window between floating and tiled.
+    ToggleFloat,
+    /// Toggle fullscreen for the focused window.
+    ToggleFullscreen,
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,
@@ -54,6 +60,8 @@ pub enum IpcEvent {
     WindowFocused { id: u64 },
     /// The output resolution changed.
     ResolutionChanged { width: u16, height: u16 },
+    /// The tiling layout changed.
+    LayoutChanged { name: String },
 }
 
 /// A response from the compositor back to dinatorctl.

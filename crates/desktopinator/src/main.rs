@@ -707,6 +707,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                     keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
                                     | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
                                     | keysyms::KEY_h | keysyms::KEY_l
+                                    | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
                                     | keysyms::KEY_plus | keysyms::KEY_equal
                                     | keysyms::KEY_minus => {
                                         if key_state == KeyState::Pressed {
@@ -719,6 +720,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                                 keysyms::KEY_space => KeyAction::SwapMaster,
                                                 keysyms::KEY_h => KeyAction::MasterShrink,
                                                 keysyms::KEY_l => KeyAction::MasterGrow,
+                                                keysyms::KEY_f => KeyAction::ToggleFullscreen,
+                                                keysyms::KEY_v => KeyAction::ToggleFloat,
+                                                keysyms::KEY_m => KeyAction::ToggleMonocle,
                                                 keysyms::KEY_plus | keysyms::KEY_equal => {
                                                     KeyAction::ResolutionUp
                                                 }
@@ -762,6 +766,24 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                             state.retile(&output);
                                         }
                                     }
+                                }
+                                KeyAction::ToggleFullscreen => {
+                                    state.toggle_fullscreen();
+                                }
+                                KeyAction::ToggleFloat => {
+                                    state.toggle_float();
+                                }
+                                KeyAction::ToggleMonocle => {
+                                    let current = state.layout.name();
+                                    let new_layout = if current == "monocle" { "column" } else { "monocle" };
+                                    state.set_layout(new_layout);
+                                    let output = state.space.outputs().next().cloned();
+                                    if let Some(output) = output {
+                                        state.retile(&output);
+                                    }
+                                    state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
+                                        name: new_layout.to_string(),
+                                    });
                                 }
                                 KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
                                     let dir = if matches!(action, KeyAction::ResolutionUp) {
@@ -949,6 +971,9 @@ enum KeyAction {
     SwapMaster,
     MasterGrow,
     MasterShrink,
+    ToggleFullscreen,
+    ToggleFloat,
+    ToggleMonocle,
     ResolutionUp,
     ResolutionDown,
     Quit,
@@ -1069,9 +1094,13 @@ fn handle_ipc_command(
                 .iter()
                 .enumerate()
                 .map(|(i, id)| {
+                    let is_floating = state.floating.contains(id);
+                    let is_fullscreen = state.fullscreen.contains(id);
                     let mut entry = serde_json::json!({
                         "index": i,
                         "id": id.0,
+                        "floating": is_floating,
+                        "fullscreen": is_fullscreen,
                     });
                     if let Some(window) = state.window_map.get(id) {
                         if let Some(geo) = state.space.element_geometry(window) {
@@ -1102,6 +1131,57 @@ fn handle_ipc_command(
                 .collect();
             IpcResponse::Data {
                 data: serde_json::Value::Array(windows),
+            }
+        }
+        IpcCommand::SetLayout { name } => {
+            info!(layout = %name, "IPC: set-layout");
+            if state.set_layout(name) {
+                let output = state.space.outputs().next().cloned();
+                if let Some(output) = output {
+                    state.retile(&output);
+                }
+                state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
+                    name: name.clone(),
+                });
+                IpcResponse::Ok {
+                    message: Some(format!("layout: {name}")),
+                }
+            } else {
+                IpcResponse::Error {
+                    message: format!("unknown layout: {name} (available: column, monocle)"),
+                }
+            }
+        }
+        IpcCommand::ToggleFloat => {
+            if let Some((id, is_floating)) = state.toggle_float() {
+                info!(id = id.0, floating = is_floating, "IPC: toggle-float");
+                IpcResponse::Ok {
+                    message: Some(if is_floating {
+                        format!("window {} floating", id.0)
+                    } else {
+                        format!("window {} tiled", id.0)
+                    }),
+                }
+            } else {
+                IpcResponse::Error {
+                    message: "no focused window".to_string(),
+                }
+            }
+        }
+        IpcCommand::ToggleFullscreen => {
+            if let Some((id, is_fullscreen)) = state.toggle_fullscreen() {
+                info!(id = id.0, fullscreen = is_fullscreen, "IPC: toggle-fullscreen");
+                IpcResponse::Ok {
+                    message: Some(if is_fullscreen {
+                        format!("window {} fullscreen", id.0)
+                    } else {
+                        format!("window {} normal", id.0)
+                    }),
+                }
+            } else {
+                IpcResponse::Error {
+                    message: "no focused window".to_string(),
+                }
             }
         }
         IpcCommand::Subscribe => {

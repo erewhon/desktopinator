@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -28,7 +28,9 @@ use smithay::wayland::shm::ShmState;
 use tracing::info;
 
 use dinator_ipc::IpcEvent;
-use dinator_tiling::{ColumnLayout, Layout, Rect, WindowId};
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+
+use dinator_tiling::{ColumnLayout, Layout, MonocleLayout, Rect, WindowId};
 
 /// Thread-safe broadcaster for IPC events.
 /// IPC client threads register their sender here; the compositor emits events.
@@ -68,6 +70,10 @@ pub struct DinatorState {
     pub window_order: Vec<WindowId>,
     pub window_map: HashMap<WindowId, Window>,
     pub surface_to_id: HashMap<WlSurface, WindowId>,
+
+    // Floating & fullscreen
+    pub floating: HashSet<WindowId>,
+    pub fullscreen: HashSet<WindowId>,
 
     // IPC event broadcasting
     pub event_broadcaster: EventBroadcaster,
@@ -121,6 +127,8 @@ impl DinatorState {
             window_order: Vec::new(),
             window_map: HashMap::new(),
             surface_to_id: HashMap::new(),
+            floating: HashSet::new(),
+            fullscreen: HashSet::new(),
             event_broadcaster: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -137,6 +145,7 @@ impl DinatorState {
     }
 
     /// Re-tile all windows on the given output.
+    /// Floating and fullscreen windows are excluded from the tiling layout.
     pub fn retile(&mut self, output: &Output) {
         let geo = self.space.output_geometry(output);
         let Some(geo) = geo else { return };
@@ -148,7 +157,15 @@ impl DinatorState {
             height: geo.size.h,
         };
 
-        let placements = self.layout.arrange(&self.window_order, area);
+        // Only tile windows that are not floating or fullscreen
+        let tiled_windows: Vec<WindowId> = self
+            .window_order
+            .iter()
+            .copied()
+            .filter(|id| !self.floating.contains(id) && !self.fullscreen.contains(id))
+            .collect();
+
+        let placements = self.layout.arrange(&tiled_windows, area);
 
         for placement in placements {
             if let Some(window) = self.window_map.get(&placement.id) {
@@ -160,11 +177,114 @@ impl DinatorState {
                     toplevel.with_pending_state(|state| {
                         state.size =
                             Some((placement.rect.width, placement.rect.height).into());
+                        state.states.unset(xdg_toplevel::State::Fullscreen);
                     });
                     toplevel.send_pending_configure();
                 }
             }
         }
+
+        // Fullscreen windows fill the entire output
+        for &id in &self.fullscreen {
+            if let Some(window) = self.window_map.get(&id) {
+                self.space.map_element(window.clone(), (geo.loc.x, geo.loc.y), false);
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.with_pending_state(|state| {
+                        state.size = Some((geo.size.w, geo.size.h).into());
+                        state.states.set(xdg_toplevel::State::Fullscreen);
+                    });
+                    toplevel.send_pending_configure();
+                }
+                // Raise fullscreen windows above tiled ones
+                self.space.raise_element(window, false);
+            }
+        }
+    }
+
+    /// Set the tiling layout by name. Returns true if changed.
+    pub fn set_layout(&mut self, name: &str) -> bool {
+        match name {
+            "column" => {
+                self.layout = Box::new(ColumnLayout::default());
+                true
+            }
+            "monocle" => {
+                self.layout = Box::new(MonocleLayout::default());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Toggle the focused window between floating and tiled.
+    pub fn toggle_float(&mut self) -> Option<(WindowId, bool)> {
+        let keyboard = self.seat.get_keyboard()?;
+        let surface = keyboard.current_focus()?;
+        let id = *self.surface_to_id.get(&surface)?;
+
+        let is_floating = if self.floating.contains(&id) {
+            self.floating.remove(&id);
+            false
+        } else {
+            // Remove from fullscreen if it was fullscreen
+            self.fullscreen.remove(&id);
+            self.floating.insert(id);
+            true
+        };
+
+        let output = self.space.outputs().next().cloned();
+        if let Some(output) = output {
+            if !is_floating {
+                // Returning to tiled: retile will place it
+                self.retile(&output);
+            } else {
+                // Going floating: center it at a reasonable size
+                let geo = self.space.output_geometry(&output);
+                if let (Some(geo), Some(window)) = (geo, self.window_map.get(&id)) {
+                    let w = geo.size.w * 2 / 3;
+                    let h = geo.size.h * 2 / 3;
+                    let x = geo.loc.x + (geo.size.w - w) / 2;
+                    let y = geo.loc.y + (geo.size.h - h) / 2;
+                    self.space.map_element(window.clone(), (x, y), false);
+                    self.space.raise_element(window, true);
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some((w, h).into());
+                            state.states.unset(xdg_toplevel::State::Fullscreen);
+                        });
+                        toplevel.send_pending_configure();
+                    }
+                }
+                // Retile remaining tiled windows
+                self.retile(&output);
+            }
+        }
+
+        Some((id, is_floating))
+    }
+
+    /// Toggle fullscreen for the focused window.
+    pub fn toggle_fullscreen(&mut self) -> Option<(WindowId, bool)> {
+        let keyboard = self.seat.get_keyboard()?;
+        let surface = keyboard.current_focus()?;
+        let id = *self.surface_to_id.get(&surface)?;
+
+        let is_fullscreen = if self.fullscreen.contains(&id) {
+            self.fullscreen.remove(&id);
+            false
+        } else {
+            // Remove from floating if it was floating
+            self.floating.remove(&id);
+            self.fullscreen.insert(id);
+            true
+        };
+
+        let output = self.space.outputs().next().cloned();
+        if let Some(output) = output {
+            self.retile(&output);
+        }
+
+        Some((id, is_fullscreen))
     }
 
     /// Returns the currently focused window, if any.

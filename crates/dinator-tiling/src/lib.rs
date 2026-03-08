@@ -22,6 +22,9 @@ pub struct Placement {
 /// Layout algorithms take a list of window IDs and an output area,
 /// and return where each window should go.
 pub trait Layout {
+    /// Layout name for IPC/display purposes.
+    fn name(&self) -> &'static str;
+
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement>;
 
     /// Increase the master area ratio by a step. Returns true if changed.
@@ -57,6 +60,8 @@ const RATIO_MIN: f64 = 0.20;
 const RATIO_MAX: f64 = 0.80;
 
 impl Layout for ColumnLayout {
+    fn name(&self) -> &'static str { "column" }
+
     fn grow_master(&mut self) -> bool {
         if self.main_ratio < RATIO_MAX {
             self.main_ratio = (self.main_ratio + RATIO_STEP).min(RATIO_MAX);
@@ -142,6 +147,39 @@ impl Layout for ColumnLayout {
         }
 
         placements
+    }
+}
+
+/// Monocle layout: every window fills the entire output area.
+/// Only the focused window is typically visible (compositor handles z-order).
+pub struct MonocleLayout {
+    /// Gap in pixels around the edges.
+    pub gap: i32,
+}
+
+impl Default for MonocleLayout {
+    fn default() -> Self {
+        Self { gap: 0 }
+    }
+}
+
+impl Layout for MonocleLayout {
+    fn name(&self) -> &'static str { "monocle" }
+
+    fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
+        let g = self.gap;
+        windows
+            .iter()
+            .map(|&id| Placement {
+                id,
+                rect: Rect {
+                    x: area.x + g,
+                    y: area.y + g,
+                    width: area.width - 2 * g,
+                    height: area.height - 2 * g,
+                },
+            })
+            .collect()
     }
 }
 

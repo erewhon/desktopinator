@@ -98,6 +98,14 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
         "list-windows" | "list_windows" | "windows" => Ok(IpcCommand::ListWindows),
         "master-grow" | "master_grow" => Ok(IpcCommand::MasterGrow),
         "master-shrink" | "master_shrink" => Ok(IpcCommand::MasterShrink),
+        "layout" | "set-layout" | "set_layout" => {
+            if args.len() != 2 {
+                anyhow::bail!("usage: dinatorctl layout <column|monocle>");
+            }
+            Ok(IpcCommand::SetLayout { name: args[1].clone() })
+        }
+        "toggle-float" | "toggle_float" | "float" => Ok(IpcCommand::ToggleFloat),
+        "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Ok(IpcCommand::ToggleFullscreen),
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
@@ -120,6 +128,9 @@ COMMANDS:
     swap-master          Swap focused window with master
     master-grow          Grow master area (Alt+L)
     master-shrink        Shrink master area (Alt+H)
+    layout NAME          Set tiling layout (column, monocle)
+    float                Toggle focused window floating/tiled
+    fullscreen           Toggle focused window fullscreen
     spawn CMD [ARGS]     Launch a program
     list-windows         List all managed windows
     subscribe            Stream compositor events (JSON lines)

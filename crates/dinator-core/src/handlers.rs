@@ -151,6 +151,8 @@ impl XdgShellHandler for DinatorState {
             self.emit_event(IpcEvent::WindowClosed { id: id.0 });
 
             self.window_order.retain(|w| *w != id);
+            self.floating.remove(&id);
+            self.fullscreen.remove(&id);
             if let Some(window) = self.window_map.remove(&id) {
                 self.space.unmap_elem(&window);
             }
@@ -173,6 +175,47 @@ impl XdgShellHandler for DinatorState {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        // In a tiling WM, windows are already maximized within their tile.
+        // Just ack the request by setting the state and sending configure.
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Maximized);
+        });
+        surface.send_configure();
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Maximized);
+        });
+        surface.send_configure();
+    }
+
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        if let Some(id) = self.surface_to_id.get(surface.wl_surface()).copied() {
+            self.floating.remove(&id);
+            self.fullscreen.insert(id);
+            let output = self.space.outputs().next().cloned();
+            if let Some(output) = output {
+                self.retile(&output);
+            }
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = self.surface_to_id.get(surface.wl_surface()).copied() {
+            self.fullscreen.remove(&id);
+            let output = self.space.outputs().next().cloned();
+            if let Some(output) = output {
+                self.retile(&output);
             }
         }
     }
