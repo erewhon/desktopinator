@@ -1,0 +1,12 @@
+[package]
+name = "dinator-lua"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dinator-plugin-api = { path = "../dinator-plugin-api" }
+dinator-tiling = { path = "../dinator-tiling" }
+mlua = { version = "0.10", features = ["lua54", "vendored", "serialize"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

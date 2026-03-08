@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 dinator-core = { path = "../dinator-core" }
 dinator-ipc = { path = "../dinator-ipc" }
+dinator-tiling = { path = "../dinator-tiling" }
+dinator-plugin-api = { path = "../dinator-plugin-api" }
+dinator-lua = { path = "../dinator-lua" }
 serde_json = { workspace = true }
 smithay = { workspace = true }
 calloop = { workspace = true }

@@ -17,7 +17,7 @@ if [ "${HEADLESS:-}" = "1" ]; then
     [ -n "${VNC_PORT:-}" ] && DINATOR_ARGS+=(--vnc-port "$VNC_PORT")
     [ -n "${RESOLUTION:-}" ] && DINATOR_ARGS+=(--resolution "$RESOLUTION")
 fi
-cargo run -- "${DINATOR_ARGS[@]}" 2>&1 | tee "$LOGFILE" &
+cargo run --bin desktopinator -- "${DINATOR_ARGS[@]}" 2>&1 | tee "$LOGFILE" &
 COMPOSITOR_PID=$!
 trap 'echo ":: shutting down"; kill $COMPOSITOR_PID 2>/dev/null; wait $COMPOSITOR_PID 2>/dev/null; rm -f "$LOGFILE"' EXIT
 

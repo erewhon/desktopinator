@@ -30,6 +30,7 @@ use tracing::info;
 use dinator_ipc::IpcEvent;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 
+use dinator_plugin_api::{PluginEvent, PluginRuntime};
 use dinator_tiling::{ColumnLayout, Layout, MonocleLayout, Rect, WindowId};
 
 /// Thread-safe broadcaster for IPC events.
@@ -77,6 +78,9 @@ pub struct DinatorState {
 
     // IPC event broadcasting
     pub event_broadcaster: EventBroadcaster,
+
+    // Plugin system
+    pub plugin_runtime: Option<Box<dyn PluginRuntime>>,
 }
 
 impl DinatorState {
@@ -130,6 +134,7 @@ impl DinatorState {
             floating: HashSet::new(),
             fullscreen: HashSet::new(),
             event_broadcaster: Arc::new(Mutex::new(Vec::new())),
+            plugin_runtime: None,
         }
     }
 
@@ -139,9 +144,32 @@ impl DinatorState {
 
     /// Broadcast an IPC event to all subscribed clients.
     /// Removes disconnected subscribers automatically.
-    pub fn emit_event(&self, event: IpcEvent) {
-        let mut subs = self.event_broadcaster.lock().unwrap();
-        subs.retain(|tx| tx.send(event.clone()).is_ok());
+    /// Also forwards to the plugin runtime if present.
+    pub fn emit_event(&mut self, event: IpcEvent) {
+        {
+            let mut subs = self.event_broadcaster.lock().unwrap();
+            subs.retain(|tx| tx.send(event.clone()).is_ok());
+        }
+
+        // Forward to plugin runtime
+        if let Some(ref mut runtime) = self.plugin_runtime {
+            let plugin_event = match &event {
+                IpcEvent::WindowOpened { id, app_id, title } => Some(PluginEvent::WindowOpened {
+                    id: *id,
+                    app_id: app_id.clone(),
+                    title: title.clone(),
+                }),
+                IpcEvent::WindowClosed { id } => Some(PluginEvent::WindowClosed { id: *id }),
+                IpcEvent::WindowFocused { id } => Some(PluginEvent::WindowFocused { id: *id }),
+                IpcEvent::LayoutChanged { name } => Some(PluginEvent::LayoutChanged {
+                    name: name.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(pe) = plugin_event {
+                runtime.on_event(&pe);
+            }
+        }
     }
 
     /// Re-tile all windows on the given output.
@@ -202,18 +230,38 @@ impl DinatorState {
     }
 
     /// Set the tiling layout by name. Returns true if changed.
+    /// Checks built-in layouts first, then plugin-provided layouts.
     pub fn set_layout(&mut self, name: &str) -> bool {
         match name {
             "column" => {
                 self.layout = Box::new(ColumnLayout::default());
-                true
+                return true;
             }
             "monocle" => {
                 self.layout = Box::new(MonocleLayout::default());
-                true
+                return true;
             }
-            _ => false,
+            _ => {}
         }
+
+        // Check plugin layouts
+        if let Some(ref mut runtime) = self.plugin_runtime {
+            if let Some(layout) = runtime.create_layout(name) {
+                self.layout = layout;
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// List all available layout names (built-in + plugin-provided).
+    pub fn available_layouts(&self) -> Vec<String> {
+        let mut names = vec!["column".to_string(), "monocle".to_string()];
+        if let Some(ref runtime) = self.plugin_runtime {
+            names.extend(runtime.layout_names());
+        }
+        names
     }
 
     /// Toggle the focused window between floating and tiled.

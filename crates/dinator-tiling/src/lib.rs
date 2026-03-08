@@ -23,7 +23,7 @@ pub struct Placement {
 /// and return where each window should go.
 pub trait Layout {
     /// Layout name for IPC/display purposes.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement>;
 
@@ -60,7 +60,7 @@ const RATIO_MIN: f64 = 0.20;
 const RATIO_MAX: f64 = 0.80;
 
 impl Layout for ColumnLayout {
-    fn name(&self) -> &'static str { "column" }
+    fn name(&self) -> &str { "column" }
 
     fn grow_master(&mut self) -> bool {
         if self.main_ratio < RATIO_MAX {
@@ -164,7 +164,7 @@ impl Default for MonocleLayout {
 }
 
 impl Layout for MonocleLayout {
-    fn name(&self) -> &'static str { "monocle" }
+    fn name(&self) -> &str { "monocle" }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         let g = self.gap;

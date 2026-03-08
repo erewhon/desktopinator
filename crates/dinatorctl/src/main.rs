@@ -106,6 +106,9 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
         }
         "toggle-float" | "toggle_float" | "float" => Ok(IpcCommand::ToggleFloat),
         "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Ok(IpcCommand::ToggleFullscreen),
+        "list-layouts" | "list_layouts" | "layouts" => Ok(IpcCommand::ListLayouts),
+        "list-plugins" | "list_plugins" | "plugins" => Ok(IpcCommand::ListPlugins),
+        "reload-plugins" | "reload_plugins" | "reload" => Ok(IpcCommand::ReloadPlugins),
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
@@ -133,6 +136,9 @@ COMMANDS:
     fullscreen           Toggle focused window fullscreen
     spawn CMD [ARGS]     Launch a program
     list-windows         List all managed windows
+    layouts              List available layouts (built-in + plugins)
+    plugins              List loaded plugins
+    reload               Reload plugins from disk
     subscribe            Stream compositor events (JSON lines)
     quit                 Quit the compositor"
     );

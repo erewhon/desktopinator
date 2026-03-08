@@ -37,6 +37,12 @@ pub enum IpcCommand {
     ToggleFloat,
     /// Toggle fullscreen for the focused window.
     ToggleFullscreen,
+    /// List all available layouts (built-in + plugin-provided).
+    ListLayouts,
+    /// List loaded plugins.
+    ListPlugins,
+    /// Reload plugins from disk.
+    ReloadPlugins,
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,

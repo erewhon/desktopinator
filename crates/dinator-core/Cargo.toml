@@ -10,3 +10,4 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 dinator-ipc = { path = "../dinator-ipc" }
 dinator-tiling = { path = "../dinator-tiling" }
+dinator-plugin-api = { path = "../dinator-plugin-api" }

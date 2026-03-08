@@ -67,12 +67,22 @@ impl CompositorHandler for DinatorState {
 
             // If the window committed a buffer that doesn't match its configured
             // tiled size, force a re-configure to constrain it back.
-            // We use send_configure() instead of retile/send_pending_configure
-            // because the latter is a no-op when the pending size hasn't changed.
+            // We use the latest SENT configure size (current_server_state), not the
+            // last acked size (current_state), because during a layout switch the
+            // client may not have acked the new configure yet. Using the acked size
+            // would fight against the pending layout change.
             if let Some(toplevel) = window.toplevel() {
-                let configured_size = toplevel.current_state().size;
+                let target = compositor::with_states(toplevel.wl_surface(), |states| {
+                    let attrs = states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap();
+                    attrs.current_server_state().size
+                });
                 let actual = window.geometry().size;
-                if let Some(target) = configured_size {
+                if let Some(target) = target {
                     if actual != target {
                         toplevel.with_pending_state(|state| {
                             state.size = Some(target);

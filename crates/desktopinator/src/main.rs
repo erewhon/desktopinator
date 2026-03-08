@@ -22,6 +22,7 @@ use smithay::utils::{Physical, Point, Rectangle, Transform};
 use tracing::info;
 
 use dinator_core::DinatorState;
+use dinator_plugin_api::PluginRuntime;
 
 type SpaceElements = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>;
 
@@ -226,6 +227,7 @@ fn run_winit() -> anyhow::Result<()> {
 
     let display_handle = display.handle();
     let mut state = DinatorState::new(display, event_loop.get_signal());
+    init_plugins(&mut state);
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
@@ -526,6 +528,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
     let display_handle = display.handle();
     let mut state = DinatorState::new(display, event_loop.get_signal());
+    init_plugins(&mut state);
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
@@ -1022,6 +1025,36 @@ fn next_resolution(current_w: u16, current_h: u16, direction: i32) -> (u16, u16)
     }
 }
 
+/// Initialize the Lua plugin runtime and load plugins from the config directory.
+fn init_plugins(state: &mut DinatorState) {
+    let plugin_dir = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(
+                std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
+            )
+            .join(".config")
+        })
+        .join("desktopinator/plugins");
+
+    let mut runtime = dinator_lua::LuaRuntime::new();
+    if let Err(e) = runtime.load_plugins(&plugin_dir) {
+        tracing::warn!(error = %e, "failed to load plugins");
+    }
+
+    let plugin_count = runtime.plugin_info().len();
+    let layout_count = runtime.layout_names().len();
+    if plugin_count > 0 {
+        info!(
+            plugins = plugin_count,
+            layouts = layout_count,
+            "plugin system initialized"
+        );
+    }
+
+    state.plugin_runtime = Some(Box::new(runtime));
+}
+
 /// Handle an IPC command from dinatorctl.
 fn handle_ipc_command(
     command: &IpcCommand,
@@ -1160,8 +1193,82 @@ fn handle_ipc_command(
                     message: Some(format!("layout: {name}")),
                 }
             } else {
+                let available = state.available_layouts().join(", ");
                 IpcResponse::Error {
-                    message: format!("unknown layout: {name} (available: column, monocle)"),
+                    message: format!("unknown layout: {name} (available: {available})"),
+                }
+            }
+        }
+        IpcCommand::ListLayouts => {
+            let layouts = state.available_layouts();
+            let current = state.layout.name().to_string();
+            let data: Vec<serde_json::Value> = layouts
+                .iter()
+                .map(|name| {
+                    serde_json::json!({
+                        "name": name,
+                        "active": *name == current,
+                    })
+                })
+                .collect();
+            IpcResponse::Data {
+                data: serde_json::Value::Array(data),
+            }
+        }
+        IpcCommand::ListPlugins => {
+            let plugins = if let Some(ref runtime) = state.plugin_runtime {
+                runtime.plugin_info()
+            } else {
+                Vec::new()
+            };
+            let data: Vec<serde_json::Value> = plugins
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "name": p.name,
+                        "version": p.version,
+                        "source": p.source,
+                        "layouts": p.layouts,
+                    })
+                })
+                .collect();
+            IpcResponse::Data {
+                data: serde_json::Value::Array(data),
+            }
+        }
+        IpcCommand::ReloadPlugins => {
+            if let Some(ref mut runtime) = state.plugin_runtime {
+                match runtime.reload() {
+                    Ok(()) => {
+                        let count = runtime.plugin_info().len();
+                        info!(count, "plugins reloaded");
+                        // Re-create active layout from new runtime, or fall back
+                        let current = state.layout.name().to_string();
+                        if current != "column" && current != "monocle" {
+                            if let Some(new_layout) = runtime.create_layout(&current) {
+                                state.layout = new_layout;
+                                info!("re-created plugin layout '{current}' from reloaded plugin");
+                            } else {
+                                state.layout = Box::new(dinator_tiling::ColumnLayout::default());
+                                info!("active plugin layout '{current}' no longer available, fell back to column");
+                            }
+                            let output = state.space.outputs().next().cloned();
+                            if let Some(output) = output {
+                                state.retile(&output);
+                            }
+                        }
+                        IpcResponse::Ok {
+                            message: Some(format!("reloaded {count} plugins")),
+                        }
+                    }
+                    Err(e) => IpcResponse::Error {
+                        message: format!("reload failed: {e}"),
+                    },
+                }
+            } else {
+                IpcResponse::Error {
+                    message: "no plugin runtime configured".to_string(),
                 }
             }
         }

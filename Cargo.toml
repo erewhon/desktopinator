@@ -5,6 +5,8 @@ members = [
     "crates/dinator-core",
     "crates/dinator-tiling",
     "crates/dinator-ipc",
+    "crates/dinator-plugin-api",
+    "crates/dinator-lua",
     "crates/dinatorctl",
 ]
 
