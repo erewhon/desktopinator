@@ -245,6 +245,47 @@ impl PrimarySelectionHandler for DinatorState {
 
 smithay::delegate_primary_selection!(DinatorState);
 
+// --- XDG Activation ---
+
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+};
+
+impl XdgActivationHandler for DinatorState {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    fn request_activation(
+        &mut self,
+        _token: XdgActivationToken,
+        token_data: XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        // Only honor recent activation requests (within 10 seconds)
+        if token_data.timestamp.elapsed().as_secs() < 10 {
+            // Find and focus the window that requested activation
+            if let Some(id) = self.surface_to_id.get(&surface) {
+                if let Some(window) = self.window_map.get(id) {
+                    let window = window.clone();
+                    self.space.raise_element(&window, true);
+                    if let Some(toplevel) = window.toplevel() {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let keyboard = self.seat.get_keyboard().unwrap();
+                        keyboard.set_focus(
+                            self,
+                            Some(toplevel.wl_surface().clone()),
+                            serial,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+smithay::delegate_xdg_activation!(DinatorState);
+
 // --- SHM ---
 
 impl BufferHandler for DinatorState {
@@ -275,6 +316,14 @@ impl SeatHandler for DinatorState {
 }
 
 delegate_seat!(DinatorState);
+
+// --- Cursor Shape ---
+
+use smithay::wayland::tablet_manager::TabletSeatHandler;
+
+impl TabletSeatHandler for DinatorState {}
+
+smithay::delegate_cursor_shape!(DinatorState);
 
 // --- Output ---
 

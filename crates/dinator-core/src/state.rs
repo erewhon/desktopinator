@@ -13,6 +13,8 @@ use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 
@@ -34,6 +36,8 @@ pub struct DinatorState {
     pub data_device_state: DataDeviceState,
     pub primary_selection_state: PrimarySelectionState,
     pub xdg_decoration_state: XdgDecorationState,
+    pub xdg_activation_state: XdgActivationState,
+    pub cursor_shape_state: CursorShapeManagerState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
 
@@ -57,6 +61,8 @@ impl DinatorState {
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "desktopinator");
 
@@ -72,6 +78,8 @@ impl DinatorState {
             data_device_state,
             primary_selection_state,
             xdg_decoration_state,
+            xdg_activation_state,
+            cursor_shape_state,
             seat_state,
             seat,
             space,
