@@ -1150,6 +1150,7 @@ dependencies = [
  "dinator-plugin-api",
  "dinator-tiling",
  "dinator-wasm",
+ "ironrdp-displaycontrol",
  "ironrdp-server",
  "rcgen",
  "rustvncserver",

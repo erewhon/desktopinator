@@ -381,6 +381,8 @@ enum RdpInputEvent {
     MouseScroll { value: i16 },
     /// Already converted to XKB keycode (evdev + 8)
     Key { keycode: u32, pressed: bool },
+    /// Client requested a display resize (e.g. window resize in mstsc)
+    ResizeDisplay { width: u16, height: u16 },
 }
 
 fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow::Result<()> {
@@ -559,6 +561,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                 width: rdp_width.clone(),
                 height: rdp_height.clone(),
                 update_tx: rdp_update_tx.clone(),
+                resize_tx: rdp_input_tx.clone(),
             };
             let input_handler = DinatorRdpInputHandler {
                 tx: rdp_input_tx,
@@ -1225,6 +1228,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                             }
                         }
                     }
+                }
+                RdpInputEvent::ResizeDisplay { width, height } => {
+                    info!(width, height, "RDP client requested resize");
+                    *pending_resize_rdp.lock().unwrap() = Some((width, height));
                 }
             }
         })
@@ -1991,6 +1998,7 @@ struct DinatorRdpDisplay {
     width: Arc<std::sync::atomic::AtomicU16>,
     height: Arc<std::sync::atomic::AtomicU16>,
     update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>>,
+    resize_tx: calloop::channel::Sender<RdpInputEvent>,
 }
 
 struct DinatorRdpDisplayUpdates {
@@ -2017,6 +2025,16 @@ impl ironrdp_server::RdpServerDisplay for DinatorRdpDisplay {
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         *self.update_tx.lock().await = Some(tx);
         Ok(Box::new(DinatorRdpDisplayUpdates { rx }))
+    }
+
+    fn request_layout(&mut self, layout: ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout) {
+        if let Some(monitor) = layout.monitors().first() {
+            let (w, h) = monitor.dimensions();
+            let width = w as u16;
+            let height = h as u16;
+            info!(width, height, "RDP client requested display resize");
+            let _ = self.resize_tx.send(RdpInputEvent::ResizeDisplay { width, height });
+        }
     }
 }
 
