@@ -233,6 +233,18 @@ impl ServerDndGrabHandler for DinatorState {
 
 delegate_data_device!(DinatorState);
 
+// --- Primary Selection ---
+
+use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
+
+impl PrimarySelectionHandler for DinatorState {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+
+smithay::delegate_primary_selection!(DinatorState);
+
 // --- SHM ---
 
 impl BufferHandler for DinatorState {
