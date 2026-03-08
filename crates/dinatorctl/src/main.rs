@@ -96,6 +96,8 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
         }
         "quit" => Ok(IpcCommand::Quit),
         "list-windows" | "list_windows" | "windows" => Ok(IpcCommand::ListWindows),
+        "master-grow" | "master_grow" => Ok(IpcCommand::MasterGrow),
+        "master-shrink" | "master_shrink" => Ok(IpcCommand::MasterShrink),
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
@@ -116,6 +118,8 @@ COMMANDS:
     focus-prev           Focus the previous window
     close                Close the focused window
     swap-master          Swap focused window with master
+    master-grow          Grow master area (Alt+L)
+    master-shrink        Shrink master area (Alt+H)
     spawn CMD [ARGS]     Launch a program
     list-windows         List all managed windows
     subscribe            Stream compositor events (JSON lines)

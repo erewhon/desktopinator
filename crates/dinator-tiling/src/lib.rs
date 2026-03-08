@@ -23,6 +23,15 @@ pub struct Placement {
 /// and return where each window should go.
 pub trait Layout {
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement>;
+
+    /// Increase the master area ratio by a step. Returns true if changed.
+    fn grow_master(&mut self) -> bool { false }
+
+    /// Decrease the master area ratio by a step. Returns true if changed.
+    fn shrink_master(&mut self) -> bool { false }
+
+    /// Current master ratio, if applicable.
+    fn master_ratio(&self) -> Option<f64> { None }
 }
 
 /// Master-stack layout: first window takes the left portion,
@@ -43,7 +52,33 @@ impl Default for ColumnLayout {
     }
 }
 
+const RATIO_STEP: f64 = 0.05;
+const RATIO_MIN: f64 = 0.20;
+const RATIO_MAX: f64 = 0.80;
+
 impl Layout for ColumnLayout {
+    fn grow_master(&mut self) -> bool {
+        if self.main_ratio < RATIO_MAX {
+            self.main_ratio = (self.main_ratio + RATIO_STEP).min(RATIO_MAX);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn shrink_master(&mut self) -> bool {
+        if self.main_ratio > RATIO_MIN {
+            self.main_ratio = (self.main_ratio - RATIO_STEP).max(RATIO_MIN);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn master_ratio(&self) -> Option<f64> {
+        Some(self.main_ratio)
+    }
+
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
             return Vec::new();

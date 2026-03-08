@@ -27,6 +27,10 @@ pub enum IpcCommand {
     Quit,
     /// List all windows.
     ListWindows,
+    /// Grow the master area.
+    MasterGrow,
+    /// Shrink the master area.
+    MasterShrink,
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,

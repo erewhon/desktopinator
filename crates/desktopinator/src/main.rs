@@ -706,6 +706,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                 match sym.raw() {
                                     keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
                                     | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
+                                    | keysyms::KEY_h | keysyms::KEY_l
                                     | keysyms::KEY_plus | keysyms::KEY_equal
                                     | keysyms::KEY_minus => {
                                         if key_state == KeyState::Pressed {
@@ -716,6 +717,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                                 keysyms::KEY_j => KeyAction::FocusNext,
                                                 keysyms::KEY_k => KeyAction::FocusPrev,
                                                 keysyms::KEY_space => KeyAction::SwapMaster,
+                                                keysyms::KEY_h => KeyAction::MasterShrink,
+                                                keysyms::KEY_l => KeyAction::MasterGrow,
                                                 keysyms::KEY_plus | keysyms::KEY_equal => {
                                                     KeyAction::ResolutionUp
                                                 }
@@ -747,6 +750,19 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                 KeyAction::FocusNext => state.focus_next(),
                                 KeyAction::FocusPrev => state.focus_prev(),
                                 KeyAction::SwapMaster => state.swap_master(),
+                                KeyAction::MasterGrow | KeyAction::MasterShrink => {
+                                    let changed = if matches!(action, KeyAction::MasterGrow) {
+                                        state.layout.grow_master()
+                                    } else {
+                                        state.layout.shrink_master()
+                                    };
+                                    if changed {
+                                        let output = state.space.outputs().next().cloned();
+                                        if let Some(output) = output {
+                                            state.retile(&output);
+                                        }
+                                    }
+                                }
                                 KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
                                     let dir = if matches!(action, KeyAction::ResolutionUp) {
                                         1
@@ -931,6 +947,8 @@ enum KeyAction {
     FocusNext,
     FocusPrev,
     SwapMaster,
+    MasterGrow,
+    MasterShrink,
     ResolutionUp,
     ResolutionDown,
     Quit,
@@ -1012,6 +1030,38 @@ fn handle_ipc_command(
             info!("IPC: quit");
             state.loop_signal.stop();
             IpcResponse::Ok { message: None }
+        }
+        IpcCommand::MasterGrow => {
+            if state.layout.grow_master() {
+                let output = state.space.outputs().next().cloned();
+                if let Some(output) = output {
+                    state.retile(&output);
+                }
+                let ratio = state.layout.master_ratio().unwrap_or(0.0);
+                IpcResponse::Ok {
+                    message: Some(format!("master ratio: {ratio:.0}%", ratio = ratio * 100.0)),
+                }
+            } else {
+                IpcResponse::Ok {
+                    message: Some("master ratio at maximum".to_string()),
+                }
+            }
+        }
+        IpcCommand::MasterShrink => {
+            if state.layout.shrink_master() {
+                let output = state.space.outputs().next().cloned();
+                if let Some(output) = output {
+                    state.retile(&output);
+                }
+                let ratio = state.layout.master_ratio().unwrap_or(0.0);
+                IpcResponse::Ok {
+                    message: Some(format!("master ratio: {ratio:.0}%", ratio = ratio * 100.0)),
+                }
+            } else {
+                IpcResponse::Ok {
+                    message: Some("master ratio at minimum".to_string()),
+                }
+            }
         }
         IpcCommand::ListWindows => {
             let windows: Vec<serde_json::Value> = state
