@@ -14,6 +14,7 @@ use crate::state::DinatorState;
 
 enum KeyAction {
     LaunchTerminal,
+    LaunchLauncher,
     CloseWindow,
     FocusNext,
     FocusPrev,
@@ -75,11 +76,12 @@ impl DinatorState {
                     }
 
                     match sym.raw() {
-                        keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                        keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
                         | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
                             if press_state == KeyState::Pressed {
                                 let action = match sym.raw() {
                                     keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                    keysyms::KEY_d => KeyAction::LaunchLauncher,
                                     keysyms::KEY_q => KeyAction::CloseWindow,
                                     keysyms::KEY_Q => KeyAction::Quit,
                                     keysyms::KEY_j => KeyAction::FocusNext,
@@ -124,6 +126,12 @@ impl DinatorState {
                     info!("keybinding: launch terminal");
                     if let Err(e) = std::process::Command::new("foot").spawn() {
                         info!(error = %e, "failed to launch foot");
+                    }
+                }
+                KeyAction::LaunchLauncher => {
+                    info!("keybinding: launch fuzzel");
+                    if let Err(e) = std::process::Command::new("fuzzel").spawn() {
+                        info!(error = %e, "failed to launch fuzzel");
                     }
                 }
                 KeyAction::CloseWindow => {

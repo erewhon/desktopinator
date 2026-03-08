@@ -37,6 +37,70 @@ use dinator_tiling::{CenteredMasterLayout, ColumnLayout, DwindleLayout, Layout, 
 /// IPC client threads register their sender here; the compositor emits events.
 pub type EventBroadcaster = Arc<Mutex<Vec<std::sync::mpsc::Sender<IpcEvent>>>>;
 
+/// Background configuration for the compositor.
+#[derive(Debug, Clone)]
+pub enum Background {
+    /// Solid color [r, g, b, a] (0.0-1.0).
+    Solid([f32; 4]),
+    /// Vertical gradient from top color to bottom color.
+    Gradient { top: [f32; 4], bottom: [f32; 4] },
+}
+
+impl Default for Background {
+    fn default() -> Self {
+        Background::Solid([0.1, 0.1, 0.1, 1.0])
+    }
+}
+
+/// Parse a background spec string into a Background.
+///
+/// Formats:
+///   "#RRGGBB"           — solid hex color
+///   "r,g,b"             — solid color (0-255 or 0.0-1.0)
+///   "#RRGGBB-#RRGGBB"   — vertical gradient (top-bottom)
+///   "r,g,b-r,g,b"       — vertical gradient
+pub fn parse_background(spec: &str) -> Option<Background> {
+    if let Some((top, bottom)) = spec.split_once('-') {
+        // Check it's not a hex color starting with #
+        if top.starts_with('#') && !bottom.starts_with('#') {
+            // Single hex color like "#112233"
+            let c = parse_color(spec)?;
+            return Some(Background::Solid(c));
+        }
+        let top = parse_color(top)?;
+        let bottom = parse_color(bottom)?;
+        Some(Background::Gradient { top, bottom })
+    } else {
+        let c = parse_color(spec)?;
+        Some(Background::Solid(c))
+    }
+}
+
+fn parse_color(s: &str) -> Option<[f32; 4]> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]);
+        }
+        return None;
+    }
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() == 3 {
+        let vals: Vec<f32> = parts.iter().filter_map(|p| p.trim().parse::<f32>().ok()).collect();
+        if vals.len() == 3 {
+            if vals.iter().all(|v| *v <= 1.0) {
+                return Some([vals[0], vals[1], vals[2], 1.0]);
+            } else {
+                return Some([vals[0] / 255.0, vals[1] / 255.0, vals[2] / 255.0, 1.0]);
+            }
+        }
+    }
+    None
+}
+
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct DinatorState {
@@ -87,6 +151,9 @@ pub struct DinatorState {
 
     /// Window rules from plugins: match criteria → auto-apply float/fullscreen.
     pub window_rules: Vec<WindowRule>,
+
+    // Background
+    pub background: Background,
 
     // Workspaces
     pub active_workspace: usize,
@@ -149,6 +216,7 @@ impl DinatorState {
             plugin_runtime: None,
             plugin_keybindings: Vec::new(),
             window_rules: Vec::new(),
+            background: Background::default(),
             active_workspace: 1,
             window_workspace: HashMap::new(),
             workspace_order: HashMap::new(),

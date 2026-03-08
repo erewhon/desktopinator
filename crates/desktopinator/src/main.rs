@@ -135,6 +135,31 @@ fn build_render_elements(
         );
     }
 
+    // Render gradient background as horizontal bands (behind everything else)
+    if let dinator_core::Background::Gradient { top, bottom } = &state.background {
+        if let Some(mode) = output.current_mode() {
+            let height = mode.size.h;
+            let num_bands = 64; // balance between smoothness and element count
+            let band_h = (height + num_bands - 1) / num_bands;
+            for i in 0..num_bands {
+                let t = i as f32 / (num_bands - 1) as f32;
+                let color = [
+                    top[0] + (bottom[0] - top[0]) * t,
+                    top[1] + (bottom[1] - top[1]) * t,
+                    top[2] + (bottom[2] - top[2]) * t,
+                    1.0,
+                ];
+                let y = i * band_h;
+                let h = band_h.min(height - y);
+                let buf = SolidColorBuffer::new((mode.size.w, h), color);
+                let loc: Point<i32, Physical> = (0, y).into();
+                elements.push(OutputRenderElements::Border(
+                    SolidColorRenderElement::from_buffer(&buf, loc, 1.0, 1.0, Kind::Unspecified),
+                ));
+            }
+        }
+    }
+
     Some(elements)
 }
 
@@ -324,7 +349,7 @@ fn run_winit() -> anyhow::Result<()> {
                         &mut framebuffer,
                         0,
                         &elements,
-                        [0.1, 0.1, 0.1, 1.0],
+                        background_clear_color(&state.background),
                     );
                 }
 
@@ -837,7 +862,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                                     }
 
                                     match sym.raw() {
-                                        keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                                        keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
                                         | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
                                         | keysyms::KEY_h | keysyms::KEY_l
                                         | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
@@ -846,6 +871,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                                             if key_state == KeyState::Pressed {
                                                 let action = match sym.raw() {
                                                     keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                                    keysyms::KEY_d => KeyAction::LaunchLauncher,
                                                     keysyms::KEY_q => KeyAction::CloseWindow,
                                                     keysyms::KEY_Q => KeyAction::Quit,
                                                     keysyms::KEY_j => KeyAction::FocusNext,
@@ -899,6 +925,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                                     info!("keybinding: launch terminal");
                                     if let Err(e) = std::process::Command::new("foot").spawn() {
                                         info!(error = %e, "failed to launch foot");
+                                    }
+                                }
+                                KeyAction::LaunchLauncher => {
+                                    info!("keybinding: launch fuzzel");
+                                    if let Err(e) = std::process::Command::new("fuzzel").spawn() {
+                                        info!(error = %e, "failed to launch fuzzel");
                                     }
                                 }
                                 KeyAction::CloseWindow => {
@@ -1168,6 +1200,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                                     info!(error = %e, "failed to launch foot");
                                 }
                             }
+                            KeyAction::LaunchLauncher => {
+                                info!("keybinding: launch fuzzel");
+                                if let Err(e) = std::process::Command::new("fuzzel").spawn() {
+                                    info!(error = %e, "failed to launch fuzzel");
+                                }
+                            }
                             KeyAction::CloseWindow => {
                                 info!("keybinding: close window");
                                 state.close_focused_window();
@@ -1329,7 +1367,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                             &mut target,
                             0,
                             &elements,
-                            [0.1, 0.1, 0.1, 1.0],
+                            background_clear_color(&state.background),
                         );
                     }
 
@@ -1339,7 +1377,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                     );
                     if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
                         if let Ok(pixels) = renderer.map_texture(&mapping) {
-                            let frame = pixels.to_vec();
+                            // GL readback gives RGBA bytes but VNC/RDP expect BGRA —
+                            // swap R and B channels in-place.
+                            let mut frame = pixels.to_vec();
+                            for chunk in frame.chunks_exact_mut(4) {
+                                chunk.swap(0, 2); // R <-> B
+                            }
                             let _ = pixel_tx.try_send(frame.clone());
                             let _ = rdp_pixel_tx.try_send(frame);
                         }
@@ -1401,8 +1444,18 @@ fn cleanup_and_exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
+/// Get the clear color for render_output based on the background config.
+fn background_clear_color(bg: &dinator_core::Background) -> [f32; 4] {
+    match bg {
+        dinator_core::Background::Solid(c) => *c,
+        // For gradients, use bottom color as clear (bands render on top)
+        dinator_core::Background::Gradient { bottom, .. } => *bottom,
+    }
+}
+
 enum KeyAction {
     LaunchTerminal,
+    LaunchLauncher,
     CloseWindow,
     FocusNext,
     FocusPrev,
@@ -1878,6 +1931,33 @@ fn handle_ipc_command(
                 .collect();
             IpcResponse::Data {
                 data: serde_json::Value::Array(data),
+            }
+        }
+        IpcCommand::SetGap { pixels } => {
+            info!(pixels, "IPC: set-gap");
+            if state.layout.set_gap(*pixels) {
+                let output = state.space.outputs().next().cloned();
+                if let Some(output) = output {
+                    state.retile(&output);
+                }
+            }
+            IpcResponse::Ok {
+                message: Some(format!("gap: {pixels}px")),
+            }
+        }
+        IpcCommand::SetBackground { spec } => {
+            info!(spec = %spec, "IPC: set-background");
+            match dinator_core::parse_background(spec) {
+                Some(bg) => {
+                    let desc = format!("{bg:?}");
+                    state.background = bg;
+                    IpcResponse::Ok {
+                        message: Some(format!("background: {desc}")),
+                    }
+                }
+                None => IpcResponse::Error {
+                    message: format!("invalid background spec: {spec} (use #RRGGBB, r,g,b, or two colors separated by -)"),
+                },
             }
         }
         IpcCommand::Subscribe => {

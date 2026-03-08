@@ -49,6 +49,10 @@ pub enum IpcCommand {
     MoveToWorkspace { workspace: usize },
     /// List all workspaces with window counts.
     ListWorkspaces,
+    /// Set background to a solid color: "r,g,b" (0.0-1.0 or 0-255) or hex "#RRGGBB".
+    SetBackground { spec: String },
+    /// Set the gap (gutter) between windows in pixels.
+    SetGap { pixels: i32 },
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,

@@ -124,6 +124,19 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
             Ok(IpcCommand::MoveToWorkspace { workspace })
         }
         "list-workspaces" | "list_workspaces" | "workspaces" => Ok(IpcCommand::ListWorkspaces),
+        "gap" | "set-gap" | "set_gap" => {
+            if args.len() != 2 {
+                anyhow::bail!("usage: dinatorctl gap PIXELS");
+            }
+            let pixels: i32 = args[1].parse().context("invalid gap size")?;
+            Ok(IpcCommand::SetGap { pixels })
+        }
+        "background" | "set-background" | "set_background" | "bg" => {
+            if args.len() != 2 {
+                anyhow::bail!("usage: dinatorctl background SPEC\n  SPEC: #RRGGBB, r,g,b (0-255 or 0.0-1.0)\n  gradient: COLOR-COLOR (e.g. #000000-#0000ff)");
+            }
+            Ok(IpcCommand::SetBackground { spec: args[1].clone() })
+        }
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
@@ -158,6 +171,8 @@ COMMANDS:
     move-to-workspace N  Move focused window to workspace N
     workspaces           List all workspaces with window counts
     subscribe            Stream compositor events (JSON lines)
+    gap PIXELS           Set gap/gutter between windows (e.g. 0, 4, 10)
+    background SPEC      Set background (#RRGGBB, r,g,b, or gradient COLOR-COLOR)
     quit                 Quit the compositor"
     );
 }

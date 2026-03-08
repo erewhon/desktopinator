@@ -2,4 +2,4 @@ mod handlers;
 mod input;
 mod state;
 
-pub use state::{ClientState, DinatorState};
+pub use state::{Background, ClientState, DinatorState, parse_background};

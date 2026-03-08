@@ -35,6 +35,12 @@ pub trait Layout {
 
     /// Current master ratio, if applicable.
     fn master_ratio(&self) -> Option<f64> { None }
+
+    /// Set the gap between windows. Returns true if changed.
+    fn set_gap(&mut self, _gap: i32) -> bool { false }
+
+    /// Current gap in pixels.
+    fn gap(&self) -> i32 { 0 }
 }
 
 /// Master-stack layout: first window takes the left portion,
@@ -83,6 +89,12 @@ impl Layout for ColumnLayout {
     fn master_ratio(&self) -> Option<f64> {
         Some(self.main_ratio)
     }
+
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap { self.gap = gap; true } else { false }
+    }
+
+    fn gap(&self) -> i32 { self.gap }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
@@ -166,6 +178,12 @@ impl Default for MonocleLayout {
 impl Layout for MonocleLayout {
     fn name(&self) -> &str { "monocle" }
 
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap { self.gap = gap; true } else { false }
+    }
+
+    fn gap(&self) -> i32 { self.gap }
+
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         let g = self.gap;
         windows
@@ -225,6 +243,12 @@ impl Layout for DwindleLayout {
     fn master_ratio(&self) -> Option<f64> {
         Some(self.main_ratio)
     }
+
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap { self.gap = gap; true } else { false }
+    }
+
+    fn gap(&self) -> i32 { self.gap }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
@@ -336,6 +360,12 @@ impl Layout for CenteredMasterLayout {
     fn master_ratio(&self) -> Option<f64> {
         Some(self.main_ratio)
     }
+
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap { self.gap = gap; true } else { false }
+    }
+
+    fn gap(&self) -> i32 { self.gap }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
