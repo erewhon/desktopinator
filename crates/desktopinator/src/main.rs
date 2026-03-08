@@ -151,6 +151,9 @@ fn build_render_elements(
                     1.0,
                 ];
                 let y = i * band_h;
+                if y >= height {
+                    break;
+                }
                 let h = band_h.min(height - y);
                 let buf = SolidColorBuffer::new((mode.size.w, h), color);
                 let loc: Point<i32, Physical> = (0, y).into();
@@ -1034,7 +1037,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
     let pending_resize_rdp = pending_resize.clone();
     event_loop
         .handle()
-        .insert_source(rdp_input_rx, move |event, _, state| {
+        .insert_source(rdp_input_rx, {
+            let mut rdp_pressed_keys = std::collections::HashSet::<u32>::new();
+            move |event, _, state| {
             let channel::Event::Msg(event) = event else {
                 return;
             };
@@ -1118,6 +1123,16 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                     pointer.frame(state);
                 }
                 RdpInputEvent::Key { keycode, pressed } => {
+                    // Filter out RDP client-side key repeats (duplicate presses)
+                    // The compositor handles its own key repeat via XKB
+                    if pressed {
+                        if !rdp_pressed_keys.insert(keycode) {
+                            return; // already pressed, skip repeat
+                        }
+                    } else {
+                        rdp_pressed_keys.remove(&keycode);
+                    }
+
                     let Some(keyboard) = state.seat.get_keyboard() else { return };
                     let serial = SERIAL_COUNTER.next_serial();
                     let key_state = if pressed {
@@ -1284,7 +1299,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                     *pending_resize_rdp.lock().unwrap() = Some((width, height));
                 }
             }
-        })
+        }})
         .map_err(|e| anyhow::anyhow!("failed to insert RDP input source: {e}"))?;
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);

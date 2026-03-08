@@ -67,6 +67,12 @@ impl CompositorHandler for DinatorState {
                 layer_map.arrange();
                 drop(layer_map);
 
+                // Send initial configure if not yet sent
+                let wlr_surface = layer.layer_surface();
+                if wlr_surface.has_pending_changes() {
+                    wlr_surface.send_pending_configure();
+                }
+
                 // Give keyboard focus to layer surfaces with exclusive interactivity
                 let keyboard_interactivity = compositor::with_states(surface, |states| {
                     states
@@ -542,9 +548,15 @@ impl WlrLayerShellHandler for DinatorState {
         &mut self,
         surface: WlrLayerSurface,
         output: Option<WlOutput>,
-        _layer: Layer,
+        layer: Layer,
         namespace: String,
     ) {
+        tracing::info!(
+            namespace = %namespace,
+            layer = ?layer,
+            "new layer surface"
+        );
+
         let output = output
             .as_ref()
             .and_then(|o| Output::from_resource(o))
@@ -554,7 +566,12 @@ impl WlrLayerShellHandler for DinatorState {
 
         if let Some(ref output) = output {
             let mut layer_map = layer_map_for_output(output);
-            layer_map.map_layer(&desktop_surface).ok();
+            let result = layer_map.map_layer(&desktop_surface);
+            tracing::info!(
+                result = ?result,
+                layers = layer_map.layers().count(),
+                "layer surface mapped"
+            );
         }
     }
 
