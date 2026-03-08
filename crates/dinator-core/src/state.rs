@@ -87,6 +87,12 @@ pub struct DinatorState {
 
     /// Window rules from plugins: match criteria → auto-apply float/fullscreen.
     pub window_rules: Vec<WindowRule>,
+
+    // Workspaces
+    pub active_workspace: usize,
+    pub window_workspace: HashMap<WindowId, usize>,
+    pub workspace_order: HashMap<usize, Vec<WindowId>>,
+    pub workspace_focus: HashMap<usize, Option<WindowId>>,
 }
 
 impl DinatorState {
@@ -143,6 +149,10 @@ impl DinatorState {
             plugin_runtime: None,
             plugin_keybindings: Vec::new(),
             window_rules: Vec::new(),
+            active_workspace: 1,
+            window_workspace: HashMap::new(),
+            workspace_order: HashMap::new(),
+            workspace_focus: HashMap::new(),
         }
     }
 
@@ -172,6 +182,15 @@ impl DinatorState {
                 IpcEvent::LayoutChanged { name } => Some(PluginEvent::LayoutChanged {
                     name: name.clone(),
                 }),
+                IpcEvent::WorkspaceChanged { workspace } => {
+                    Some(PluginEvent::WorkspaceChanged { workspace: *workspace })
+                }
+                IpcEvent::WindowMovedWorkspace { id, workspace } => {
+                    Some(PluginEvent::WindowMovedWorkspace {
+                        id: *id,
+                        workspace: *workspace,
+                    })
+                }
                 _ => None,
             };
             if let Some(pe) = plugin_event {
@@ -217,6 +236,12 @@ impl DinatorState {
                 PluginAction::Log { message } => {
                     info!(plugin_log = %message);
                 }
+                PluginAction::SwitchWorkspace { workspace } => {
+                    self.switch_workspace(workspace);
+                }
+                PluginAction::MoveToWorkspace { workspace } => {
+                    self.move_to_workspace(workspace);
+                }
             }
         }
     }
@@ -236,6 +261,141 @@ impl DinatorState {
             };
             app_match && title_match
         })
+    }
+
+    /// Switch to a workspace (1-9).
+    pub fn switch_workspace(&mut self, workspace: usize) {
+        if workspace < 1 || workspace > 9 || workspace == self.active_workspace {
+            return;
+        }
+
+        info!(from = self.active_workspace, to = workspace, "switching workspace");
+
+        // Save current focus
+        let current_focus = self
+            .seat
+            .get_keyboard()
+            .and_then(|kb| kb.current_focus())
+            .and_then(|s| self.surface_to_id.get(&s).copied());
+        self.workspace_focus
+            .insert(self.active_workspace, current_focus);
+
+        // Save current window_order to workspace_order
+        self.workspace_order
+            .insert(self.active_workspace, self.window_order.clone());
+
+        // Unmap all current workspace windows from Space
+        for &id in &self.window_order {
+            if let Some(window) = self.window_map.get(&id) {
+                self.space.unmap_elem(window);
+            }
+        }
+
+        // Clear keyboard focus
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+        }
+
+        // Switch to new workspace
+        self.active_workspace = workspace;
+
+        // Restore window_order from workspace_order
+        self.window_order = self
+            .workspace_order
+            .get(&workspace)
+            .cloned()
+            .unwrap_or_default();
+
+        // Map and retile
+        let output = self.space.outputs().next().cloned();
+        if let Some(ref output) = output {
+            self.retile(output);
+        }
+
+        // Restore focus
+        let saved_focus = self
+            .workspace_focus
+            .get(&workspace)
+            .copied()
+            .flatten();
+        let focus_id = saved_focus.or_else(|| self.window_order.last().copied());
+        if let Some(id) = focus_id {
+            if let Some(window) = self.window_map.get(&id) {
+                let window = window.clone();
+                self.space.raise_element(&window, true);
+                if let Some(toplevel) = window.toplevel() {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                        keyboard.set_focus(
+                            self,
+                            Some(toplevel.wl_surface().clone()),
+                            serial,
+                        );
+                    }
+                }
+            }
+        }
+
+        self.emit_event(IpcEvent::WorkspaceChanged { workspace });
+    }
+
+    /// Move the focused window to a workspace (1-9).
+    pub fn move_to_workspace(&mut self, workspace: usize) {
+        if workspace < 1 || workspace > 9 || workspace == self.active_workspace {
+            return;
+        }
+
+        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        let Some(surface) = keyboard.current_focus() else { return };
+        let Some(&id) = self.surface_to_id.get(&surface) else { return };
+
+        info!(window = id.0, to = workspace, "moving window to workspace");
+
+        // Update workspace assignment
+        self.window_workspace.insert(id, workspace);
+
+        // Remove from current window_order (active workspace)
+        self.window_order.retain(|w| *w != id);
+
+        // Add to target workspace's order
+        self.workspace_order
+            .entry(workspace)
+            .or_default()
+            .push(id);
+
+        // Unmap from Space
+        if let Some(window) = self.window_map.get(&id) {
+            self.space.unmap_elem(window);
+        }
+
+        // Retile remaining windows
+        let output = self.space.outputs().next().cloned();
+        if let Some(ref output) = output {
+            self.retile(output);
+        }
+
+        // Focus next window on current workspace
+        if let Some(&next_id) = self.window_order.last() {
+            if let Some(window) = self.window_map.get(&next_id) {
+                if let Some(toplevel) = window.toplevel() {
+                    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                    keyboard.set_focus(
+                        self,
+                        Some(toplevel.wl_surface().clone()),
+                        serial,
+                    );
+                }
+            }
+        } else {
+            let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+            keyboard.set_focus(self, Option::<WlSurface>::None, serial);
+        }
+
+        self.emit_event(IpcEvent::WindowMovedWorkspace {
+            id: id.0,
+            workspace,
+        });
     }
 
     /// Re-tile all windows on the given output.

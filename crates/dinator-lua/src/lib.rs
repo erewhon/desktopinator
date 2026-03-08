@@ -360,6 +360,8 @@ impl PluginRuntime for LuaRuntime {
             PluginEvent::WindowClosed { .. } => "window_closed",
             PluginEvent::WindowFocused { .. } => "window_focused",
             PluginEvent::LayoutChanged { .. } => "layout_changed",
+            PluginEvent::WorkspaceChanged { .. } => "workspace_changed",
+            PluginEvent::WindowMovedWorkspace { .. } => "window_moved_workspace",
         };
 
         for plugin in &self.plugins {
@@ -404,6 +406,23 @@ impl PluginRuntime for LuaRuntime {
                         let tbl = plugin.lua.create_table().ok();
                         if let Some(tbl) = &tbl {
                             let _ = tbl.set("name", name.as_str());
+                        }
+                        tbl.map(LuaValue::Table)
+                            .unwrap_or(LuaValue::Nil)
+                    }
+                    PluginEvent::WorkspaceChanged { workspace } => {
+                        let tbl = plugin.lua.create_table().ok();
+                        if let Some(tbl) = &tbl {
+                            let _ = tbl.set("workspace", *workspace);
+                        }
+                        tbl.map(LuaValue::Table)
+                            .unwrap_or(LuaValue::Nil)
+                    }
+                    PluginEvent::WindowMovedWorkspace { id, workspace } => {
+                        let tbl = plugin.lua.create_table().ok();
+                        if let Some(tbl) = &tbl {
+                            let _ = tbl.set("id", *id);
+                            let _ = tbl.set("workspace", *workspace);
                         }
                         tbl.map(LuaValue::Table)
                             .unwrap_or(LuaValue::Nil)

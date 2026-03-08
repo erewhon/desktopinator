@@ -21,6 +21,13 @@ pub enum PluginEvent {
     LayoutChanged {
         name: String,
     },
+    WorkspaceChanged {
+        workspace: usize,
+    },
+    WindowMovedWorkspace {
+        id: u64,
+        workspace: usize,
+    },
 }
 
 /// Actions a plugin can request the compositor to perform.
@@ -37,6 +44,8 @@ pub enum PluginAction {
     ToggleFullscreen,
     /// Log a message from the plugin.
     Log { message: String },
+    SwitchWorkspace { workspace: usize },
+    MoveToWorkspace { workspace: usize },
 }
 
 /// A window rule that matches windows by criteria and applies actions.

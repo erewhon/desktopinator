@@ -43,6 +43,12 @@ pub enum IpcCommand {
     ListPlugins,
     /// Reload plugins from disk.
     ReloadPlugins,
+    /// Switch to a workspace (1-9).
+    SwitchWorkspace { workspace: usize },
+    /// Move the focused window to a workspace (1-9).
+    MoveToWorkspace { workspace: usize },
+    /// List all workspaces with window counts.
+    ListWorkspaces,
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,
@@ -68,6 +74,10 @@ pub enum IpcEvent {
     ResolutionChanged { width: u16, height: u16 },
     /// The tiling layout changed.
     LayoutChanged { name: String },
+    /// The active workspace changed.
+    WorkspaceChanged { workspace: usize },
+    /// A window was moved to a different workspace.
+    WindowMovedWorkspace { id: u64, workspace: usize },
 }
 
 /// A response from the compositor back to dinatorctl.

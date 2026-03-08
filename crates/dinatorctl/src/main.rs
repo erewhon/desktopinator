@@ -109,6 +109,21 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
         "list-layouts" | "list_layouts" | "layouts" => Ok(IpcCommand::ListLayouts),
         "list-plugins" | "list_plugins" | "plugins" => Ok(IpcCommand::ListPlugins),
         "reload-plugins" | "reload_plugins" | "reload" => Ok(IpcCommand::ReloadPlugins),
+        "workspace" | "switch-workspace" | "switch_workspace" => {
+            if args.len() != 2 {
+                anyhow::bail!("usage: dinatorctl workspace <1-9>");
+            }
+            let workspace: usize = args[1].parse().context("invalid workspace number")?;
+            Ok(IpcCommand::SwitchWorkspace { workspace })
+        }
+        "move-to-workspace" | "move_to_workspace" | "move-workspace" => {
+            if args.len() != 2 {
+                anyhow::bail!("usage: dinatorctl move-to-workspace <1-9>");
+            }
+            let workspace: usize = args[1].parse().context("invalid workspace number")?;
+            Ok(IpcCommand::MoveToWorkspace { workspace })
+        }
+        "list-workspaces" | "list_workspaces" | "workspaces" => Ok(IpcCommand::ListWorkspaces),
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
@@ -139,6 +154,9 @@ COMMANDS:
     layouts              List available layouts (built-in + plugins)
     plugins              List loaded plugins
     reload               Reload plugins from disk
+    workspace N          Switch to workspace N (1-9)
+    move-to-workspace N  Move focused window to workspace N
+    workspaces           List all workspaces with window counts
     subscribe            Stream compositor events (JSON lines)
     quit                 Quit the compositor"
     );

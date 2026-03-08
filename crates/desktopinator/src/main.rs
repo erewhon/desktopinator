@@ -725,6 +725,21 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
                                 // Check built-in keybindings (Alt+key)
                                 if modifiers.alt {
+                                    // Workspace switching: Alt+1-9, Alt+Shift+1-9
+                                    let ws = keysym_to_workspace(sym.raw());
+                                    if let Some(n) = ws {
+                                        if key_state == KeyState::Pressed {
+                                            let action = if modifiers.shift {
+                                                KeyAction::MoveToWorkspace(n)
+                                            } else {
+                                                KeyAction::SwitchWorkspace(n)
+                                            };
+                                            return FilterResult::Intercept(Some(action));
+                                        } else {
+                                            return FilterResult::Intercept(None);
+                                        }
+                                    }
+
                                     match sym.raw() {
                                         keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
                                         | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
@@ -856,6 +871,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                         runtime.invoke_callback(callback_id);
                                     }
                                     state.execute_plugin_actions();
+                                }
+                                KeyAction::SwitchWorkspace(n) => {
+                                    state.switch_workspace(n);
+                                }
+                                KeyAction::MoveToWorkspace(n) => {
+                                    state.move_to_workspace(n);
                                 }
                                 KeyAction::Quit => {
                                     info!("keybinding: quit");
@@ -1031,6 +1052,8 @@ enum KeyAction {
     ResolutionDown,
     Quit,
     PluginCallback(String),
+    SwitchWorkspace(usize),
+    MoveToWorkspace(usize),
 }
 
 /// A registered plugin keybinding.
@@ -1041,6 +1064,23 @@ struct PluginKeybinding {
     keysym: u32,
     /// The callback ID to invoke.
     callback_id: String,
+}
+
+/// Map number keysyms (both shifted and unshifted) to workspace numbers 1-9.
+fn keysym_to_workspace(sym: u32) -> Option<usize> {
+    use smithay::input::keyboard::keysyms;
+    match sym {
+        keysyms::KEY_1 | keysyms::KEY_exclam => Some(1),
+        keysyms::KEY_2 | keysyms::KEY_at => Some(2),
+        keysyms::KEY_3 | keysyms::KEY_numbersign => Some(3),
+        keysyms::KEY_4 | keysyms::KEY_dollar => Some(4),
+        keysyms::KEY_5 | keysyms::KEY_percent => Some(5),
+        keysyms::KEY_6 | keysyms::KEY_asciicircum => Some(6),
+        keysyms::KEY_7 | keysyms::KEY_ampersand => Some(7),
+        keysyms::KEY_8 | keysyms::KEY_asterisk => Some(8),
+        keysyms::KEY_9 | keysyms::KEY_parenleft => Some(9),
+        _ => None,
+    }
 }
 
 /// Parse a key name string to an XKB keysym.
@@ -1265,11 +1305,13 @@ fn handle_ipc_command(
                 .map(|(i, id)| {
                     let is_floating = state.floating.contains(id);
                     let is_fullscreen = state.fullscreen.contains(id);
+                    let ws = state.window_workspace.get(id).copied().unwrap_or(state.active_workspace);
                     let mut entry = serde_json::json!({
                         "index": i,
                         "id": id.0,
                         "floating": is_floating,
                         "fullscreen": is_fullscreen,
+                        "workspace": ws,
                     });
                     if let Some(window) = state.window_map.get(id) {
                         if let Some(geo) = state.space.element_geometry(window) {
@@ -1425,6 +1467,53 @@ fn handle_ipc_command(
                 IpcResponse::Error {
                     message: "no focused window".to_string(),
                 }
+            }
+        }
+        IpcCommand::SwitchWorkspace { workspace } => {
+            if *workspace < 1 || *workspace > 9 {
+                IpcResponse::Error {
+                    message: format!("invalid workspace: {workspace} (must be 1-9)"),
+                }
+            } else {
+                state.switch_workspace(*workspace);
+                IpcResponse::Ok {
+                    message: Some(format!("workspace {workspace}")),
+                }
+            }
+        }
+        IpcCommand::MoveToWorkspace { workspace } => {
+            if *workspace < 1 || *workspace > 9 {
+                IpcResponse::Error {
+                    message: format!("invalid workspace: {workspace} (must be 1-9)"),
+                }
+            } else {
+                state.move_to_workspace(*workspace);
+                IpcResponse::Ok {
+                    message: Some(format!("moved to workspace {workspace}")),
+                }
+            }
+        }
+        IpcCommand::ListWorkspaces => {
+            let data: Vec<serde_json::Value> = (1..=9)
+                .map(|ws| {
+                    let count = if ws == state.active_workspace {
+                        state.window_order.len()
+                    } else {
+                        state
+                            .workspace_order
+                            .get(&ws)
+                            .map(|v| v.len())
+                            .unwrap_or(0)
+                    };
+                    serde_json::json!({
+                        "workspace": ws,
+                        "windows": count,
+                        "active": ws == state.active_workspace,
+                    })
+                })
+                .collect();
+            IpcResponse::Data {
+                data: serde_json::Value::Array(data),
             }
         }
         IpcCommand::Subscribe => {

@@ -20,6 +20,8 @@ enum KeyAction {
     SwapMaster,
     Quit,
     PluginCallback(String),
+    SwitchWorkspace(usize),
+    MoveToWorkspace(usize),
 }
 
 impl DinatorState {
@@ -57,6 +59,21 @@ impl DinatorState {
                 // host compositors (KDE, GNOME) that grab it for their own use,
                 // causing stuck modifier state in nested sessions.
                 if modifiers.alt {
+                    // Workspace switching: Alt+1-9
+                    let ws = keysym_to_workspace(sym.raw());
+                    if let Some(n) = ws {
+                        if press_state == KeyState::Pressed {
+                            let action = if modifiers.shift {
+                                KeyAction::MoveToWorkspace(n)
+                            } else {
+                                KeyAction::SwitchWorkspace(n)
+                            };
+                            return FilterResult::Intercept(Some(action));
+                        } else {
+                            return FilterResult::Intercept(None);
+                        }
+                    }
+
                     match sym.raw() {
                         keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
                         | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
@@ -72,7 +89,6 @@ impl DinatorState {
                                 };
                                 return FilterResult::Intercept(Some(action));
                             } else {
-                                // Swallow release too so client doesn't see orphaned release
                                 return FilterResult::Intercept(None);
                             }
                         }
@@ -124,6 +140,8 @@ impl DinatorState {
                     }
                     self.execute_plugin_actions();
                 }
+                KeyAction::SwitchWorkspace(n) => self.switch_workspace(n),
+                KeyAction::MoveToWorkspace(n) => self.move_to_workspace(n),
                 KeyAction::Quit => {
                     info!("keybinding: quit");
                     self.loop_signal.stop();
@@ -219,5 +237,21 @@ impl DinatorState {
 
         pointer.axis(self, frame);
         pointer.frame(self);
+    }
+}
+
+/// Map number keysyms (both shifted and unshifted) to workspace numbers 1-9.
+fn keysym_to_workspace(sym: u32) -> Option<usize> {
+    match sym {
+        keysyms::KEY_1 | keysyms::KEY_exclam => Some(1),
+        keysyms::KEY_2 | keysyms::KEY_at => Some(2),
+        keysyms::KEY_3 | keysyms::KEY_numbersign => Some(3),
+        keysyms::KEY_4 | keysyms::KEY_dollar => Some(4),
+        keysyms::KEY_5 | keysyms::KEY_percent => Some(5),
+        keysyms::KEY_6 | keysyms::KEY_asciicircum => Some(6),
+        keysyms::KEY_7 | keysyms::KEY_ampersand => Some(7),
+        keysyms::KEY_8 | keysyms::KEY_asterisk => Some(8),
+        keysyms::KEY_9 | keysyms::KEY_parenleft => Some(9),
+        _ => None,
     }
 }

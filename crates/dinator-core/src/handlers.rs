@@ -113,6 +113,7 @@ impl XdgShellHandler for DinatorState {
         self.window_map.insert(id, window.clone());
         self.surface_to_id
             .insert(surface.wl_surface().clone(), id);
+        self.window_workspace.insert(id, self.active_workspace);
 
         // Mark the toplevel as activated
         surface.with_pending_state(|state| {
@@ -204,6 +205,18 @@ impl XdgShellHandler for DinatorState {
             self.window_order.retain(|w| *w != id);
             self.floating.remove(&id);
             self.fullscreen.remove(&id);
+
+            // Clean up workspace tracking
+            self.window_workspace.remove(&id);
+            for order in self.workspace_order.values_mut() {
+                order.retain(|w| *w != id);
+            }
+            for focus in self.workspace_focus.values_mut() {
+                if *focus == Some(id) {
+                    *focus = None;
+                }
+            }
+
             if let Some(window) = self.window_map.remove(&id) {
                 self.space.unmap_elem(&window);
             }
