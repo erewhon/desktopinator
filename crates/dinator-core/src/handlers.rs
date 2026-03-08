@@ -341,6 +341,26 @@ smithay::delegate_fractional_scale!(DinatorState);
 
 smithay::delegate_single_pixel_buffer!(DinatorState);
 
+// --- Relative Pointer ---
+
+smithay::delegate_relative_pointer!(DinatorState);
+
+// --- Content Type ---
+
+smithay::delegate_content_type!(DinatorState);
+
+// --- XDG Foreign ---
+
+use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
+
+impl XdgForeignHandler for DinatorState {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
+smithay::delegate_xdg_foreign!(DinatorState);
+
 // --- Output ---
 
 impl OutputHandler for DinatorState {
