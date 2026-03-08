@@ -1139,7 +1139,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                                     }
                                 }
                                 match sym.raw() {
-                                    keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                                    keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
                                     | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
                                     | keysyms::KEY_h | keysyms::KEY_l
                                     | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
@@ -1148,6 +1148,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                                         if key_state == KeyState::Pressed {
                                             let action = match sym.raw() {
                                                 keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                                keysyms::KEY_d => KeyAction::LaunchLauncher,
                                                 keysyms::KEY_q => KeyAction::CloseWindow,
                                                 keysyms::KEY_Q => KeyAction::Quit,
                                                 keysyms::KEY_j => KeyAction::FocusNext,
