@@ -154,6 +154,46 @@ impl XdgShellHandler for DinatorState {
                 attrs.as_ref().and_then(|a| a.title.clone()),
             )
         });
+
+        // Apply window rules
+        let rule = self.match_window_rule(
+            app_id.as_deref(),
+            title.as_deref(),
+        ).cloned();
+        if let Some(rule) = rule {
+            if rule.float {
+                info!(app_id = ?app_id, "window rule: auto-float");
+                self.floating.insert(id);
+                let output = self.space.outputs().next().cloned();
+                if let Some(ref output) = output {
+                    // Center the floating window
+                    let geo = self.space.output_geometry(output);
+                    if let (Some(geo), Some(window)) = (geo, self.window_map.get(&id)) {
+                        let w = geo.size.w * 2 / 3;
+                        let h = geo.size.h * 2 / 3;
+                        let x = geo.loc.x + (geo.size.w - w) / 2;
+                        let y = geo.loc.y + (geo.size.h - h) / 2;
+                        self.space.map_element(window.clone(), (x, y), false);
+                        self.space.raise_element(window, true);
+                        if let Some(toplevel) = window.toplevel() {
+                            toplevel.with_pending_state(|state| {
+                                state.size = Some((w, h).into());
+                            });
+                            toplevel.send_pending_configure();
+                        }
+                    }
+                    self.retile(output);
+                }
+            } else if rule.fullscreen {
+                info!(app_id = ?app_id, "window rule: auto-fullscreen");
+                self.fullscreen.insert(id);
+                let output = self.space.outputs().next().cloned();
+                if let Some(ref output) = output {
+                    self.retile(output);
+                }
+            }
+        }
+
         self.emit_event(IpcEvent::WindowOpened { id: id.0, app_id, title });
     }
 

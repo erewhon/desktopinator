@@ -19,6 +19,7 @@ enum KeyAction {
     FocusPrev,
     SwapMaster,
     Quit,
+    PluginCallback(String),
 }
 
 impl DinatorState {
@@ -42,6 +43,7 @@ impl DinatorState {
 
         let Some(keyboard) = self.seat.get_keyboard() else { return };
 
+        let plugin_bindings = self.plugin_keybindings.clone();
         let action = keyboard.input::<Option<KeyAction>, _>(
             self,
             keycode,
@@ -49,35 +51,54 @@ impl DinatorState {
             serial,
             time,
             |_state, modifiers, keysym| {
+                let sym = keysym.modified_sym();
+
                 // Use Alt as the compositor modifier. Super conflicts with
                 // host compositors (KDE, GNOME) that grab it for their own use,
                 // causing stuck modifier state in nested sessions.
-                if !modifiers.alt {
-                    return FilterResult::Forward;
+                if modifiers.alt {
+                    match sym.raw() {
+                        keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                        | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
+                            if press_state == KeyState::Pressed {
+                                let action = match sym.raw() {
+                                    keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                    keysyms::KEY_q => KeyAction::CloseWindow,
+                                    keysyms::KEY_Q => KeyAction::Quit,
+                                    keysyms::KEY_j => KeyAction::FocusNext,
+                                    keysyms::KEY_k => KeyAction::FocusPrev,
+                                    keysyms::KEY_space => KeyAction::SwapMaster,
+                                    _ => unreachable!(),
+                                };
+                                return FilterResult::Intercept(Some(action));
+                            } else {
+                                // Swallow release too so client doesn't see orphaned release
+                                return FilterResult::Intercept(None);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
 
-                let sym = keysym.modified_sym();
-                match sym.raw() {
-                    keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
-                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
+                // Check plugin-registered keybindings
+                for (ks, alt, ctrl, shift, logo, ref cb_id) in &plugin_bindings {
+                    if sym.raw() == *ks
+                        && modifiers.alt == *alt
+                        && modifiers.ctrl == *ctrl
+                        && modifiers.shift == *shift
+                        && modifiers.logo == *logo
+                    {
                         if press_state == KeyState::Pressed {
-                            let action = match sym.raw() {
-                                keysyms::KEY_Return => KeyAction::LaunchTerminal,
-                                keysyms::KEY_q => KeyAction::CloseWindow,
-                                keysyms::KEY_Q => KeyAction::Quit,
-                                keysyms::KEY_j => KeyAction::FocusNext,
-                                keysyms::KEY_k => KeyAction::FocusPrev,
-                                keysyms::KEY_space => KeyAction::SwapMaster,
-                                _ => unreachable!(),
-                            };
-                            FilterResult::Intercept(Some(action))
+                            return FilterResult::Intercept(Some(
+                                KeyAction::PluginCallback(cb_id.clone()),
+                            ));
                         } else {
-                            // Swallow release too so client doesn't see orphaned release
-                            FilterResult::Intercept(None)
+                            return FilterResult::Intercept(None);
                         }
                     }
-                    _ => FilterResult::Forward,
                 }
+
+                FilterResult::Forward
             },
         );
 
@@ -96,6 +117,13 @@ impl DinatorState {
                 KeyAction::FocusNext => self.focus_next(),
                 KeyAction::FocusPrev => self.focus_prev(),
                 KeyAction::SwapMaster => self.swap_master(),
+                KeyAction::PluginCallback(ref callback_id) => {
+                    info!(callback = %callback_id, "plugin keybinding");
+                    if let Some(ref mut runtime) = self.plugin_runtime {
+                        runtime.invoke_callback(callback_id);
+                    }
+                    self.execute_plugin_actions();
+                }
                 KeyAction::Quit => {
                     info!("keybinding: quit");
                     self.loop_signal.stop();

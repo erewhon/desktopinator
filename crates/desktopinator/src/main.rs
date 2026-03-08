@@ -227,7 +227,11 @@ fn run_winit() -> anyhow::Result<()> {
 
     let display_handle = display.handle();
     let mut state = DinatorState::new(display, event_loop.get_signal());
-    init_plugins(&mut state);
+    let plugin_keybindings = init_plugins(&mut state);
+    state.plugin_keybindings = plugin_keybindings
+        .into_iter()
+        .map(|kb| (kb.keysym, kb.mods.0, kb.mods.1, kb.mods.2, kb.mods.3, kb.callback_id))
+        .collect();
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
@@ -528,7 +532,11 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
     let display_handle = display.handle();
     let mut state = DinatorState::new(display, event_loop.get_signal());
-    init_plugins(&mut state);
+    let plugin_keybindings = init_plugins(&mut state);
+    state.plugin_keybindings = plugin_keybindings
+        .into_iter()
+        .map(|kb| (kb.keysym, kb.mods.0, kb.mods.1, kb.mods.2, kb.mods.3, kb.callback_id))
+        .collect();
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
@@ -705,6 +713,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                         };
 
                         // Check for compositor keybindings (Alt+key)
+                        let plugin_bindings = state.plugin_keybindings.clone();
                         let action = keyboard.input::<Option<KeyAction>, _>(
                             state,
                             keycode.into(),
@@ -712,43 +721,64 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                             serial,
                             0,
                             |_state, modifiers, ksym| {
-                                if !modifiers.alt {
-                                    return FilterResult::Forward;
-                                }
                                 let sym = ksym.modified_sym();
-                                match sym.raw() {
-                                    keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
-                                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
-                                    | keysyms::KEY_h | keysyms::KEY_l
-                                    | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
-                                    | keysyms::KEY_plus | keysyms::KEY_equal
-                                    | keysyms::KEY_minus => {
+
+                                // Check built-in keybindings (Alt+key)
+                                if modifiers.alt {
+                                    match sym.raw() {
+                                        keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                                        | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
+                                        | keysyms::KEY_h | keysyms::KEY_l
+                                        | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
+                                        | keysyms::KEY_plus | keysyms::KEY_equal
+                                        | keysyms::KEY_minus => {
+                                            if key_state == KeyState::Pressed {
+                                                let action = match sym.raw() {
+                                                    keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                                    keysyms::KEY_q => KeyAction::CloseWindow,
+                                                    keysyms::KEY_Q => KeyAction::Quit,
+                                                    keysyms::KEY_j => KeyAction::FocusNext,
+                                                    keysyms::KEY_k => KeyAction::FocusPrev,
+                                                    keysyms::KEY_space => KeyAction::SwapMaster,
+                                                    keysyms::KEY_h => KeyAction::MasterShrink,
+                                                    keysyms::KEY_l => KeyAction::MasterGrow,
+                                                    keysyms::KEY_f => KeyAction::ToggleFullscreen,
+                                                    keysyms::KEY_v => KeyAction::ToggleFloat,
+                                                    keysyms::KEY_m => KeyAction::ToggleMonocle,
+                                                    keysyms::KEY_plus | keysyms::KEY_equal => {
+                                                        KeyAction::ResolutionUp
+                                                    }
+                                                    keysyms::KEY_minus => KeyAction::ResolutionDown,
+                                                    _ => unreachable!(),
+                                                };
+                                                return FilterResult::Intercept(Some(action));
+                                            } else {
+                                                return FilterResult::Intercept(None);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+
+                                // Check plugin-registered keybindings
+                                for (ks, alt, ctrl, shift, logo, ref cb_id) in &plugin_bindings {
+                                    if sym.raw() == *ks
+                                        && modifiers.alt == *alt
+                                        && modifiers.ctrl == *ctrl
+                                        && modifiers.shift == *shift
+                                        && modifiers.logo == *logo
+                                    {
                                         if key_state == KeyState::Pressed {
-                                            let action = match sym.raw() {
-                                                keysyms::KEY_Return => KeyAction::LaunchTerminal,
-                                                keysyms::KEY_q => KeyAction::CloseWindow,
-                                                keysyms::KEY_Q => KeyAction::Quit,
-                                                keysyms::KEY_j => KeyAction::FocusNext,
-                                                keysyms::KEY_k => KeyAction::FocusPrev,
-                                                keysyms::KEY_space => KeyAction::SwapMaster,
-                                                keysyms::KEY_h => KeyAction::MasterShrink,
-                                                keysyms::KEY_l => KeyAction::MasterGrow,
-                                                keysyms::KEY_f => KeyAction::ToggleFullscreen,
-                                                keysyms::KEY_v => KeyAction::ToggleFloat,
-                                                keysyms::KEY_m => KeyAction::ToggleMonocle,
-                                                keysyms::KEY_plus | keysyms::KEY_equal => {
-                                                    KeyAction::ResolutionUp
-                                                }
-                                                keysyms::KEY_minus => KeyAction::ResolutionDown,
-                                                _ => unreachable!(),
-                                            };
-                                            FilterResult::Intercept(Some(action))
+                                            return FilterResult::Intercept(Some(
+                                                KeyAction::PluginCallback(cb_id.clone()),
+                                            ));
                                         } else {
-                                            FilterResult::Intercept(None)
+                                            return FilterResult::Intercept(None);
                                         }
                                     }
-                                    _ => FilterResult::Forward,
                                 }
+
+                                FilterResult::Forward
                             },
                         );
 
@@ -819,6 +849,13 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                         *pending_resize_input.lock().unwrap() =
                                             Some((new_w, new_h));
                                     }
+                                }
+                                KeyAction::PluginCallback(ref callback_id) => {
+                                    info!(callback = %callback_id, "plugin keybinding");
+                                    if let Some(ref mut runtime) = state.plugin_runtime {
+                                        runtime.invoke_callback(callback_id);
+                                    }
+                                    state.execute_plugin_actions();
                                 }
                                 KeyAction::Quit => {
                                     info!("keybinding: quit");
@@ -993,6 +1030,53 @@ enum KeyAction {
     ResolutionUp,
     ResolutionDown,
     Quit,
+    PluginCallback(String),
+}
+
+/// A registered plugin keybinding.
+struct PluginKeybinding {
+    /// Required modifier flags: (alt, ctrl, shift, logo).
+    mods: (bool, bool, bool, bool),
+    /// The XKB keysym to match.
+    keysym: u32,
+    /// The callback ID to invoke.
+    callback_id: String,
+}
+
+/// Parse a key name string to an XKB keysym.
+fn key_name_to_keysym(name: &str) -> Option<u32> {
+    use smithay::input::keyboard::{keysyms, xkb};
+    let sym = xkb::keysym_from_name(name, xkb::KEYSYM_NO_FLAGS);
+    if sym.raw() == keysyms::KEY_NoSymbol {
+        // Try with XKB_KEYSYM_CASE_INSENSITIVE
+        let sym = xkb::keysym_from_name(name, xkb::KEYSYM_CASE_INSENSITIVE);
+        if sym.raw() == keysyms::KEY_NoSymbol {
+            None
+        } else {
+            Some(sym.raw())
+        }
+    } else {
+        Some(sym.raw())
+    }
+}
+
+/// Parse modifier strings like "Alt", "Ctrl", "Shift", "Super"
+/// into a (alt, ctrl, shift, logo) tuple.
+fn parse_modifiers(mods: &[String]) -> (bool, bool, bool, bool) {
+    let mut alt = false;
+    let mut ctrl = false;
+    let mut shift = false;
+    let mut logo = false;
+    for m in mods {
+        match m.to_lowercase().as_str() {
+            "alt" | "mod1" => alt = true,
+            "ctrl" | "control" => ctrl = true,
+            "shift" => shift = true,
+            "super" | "logo" | "mod4" => logo = true,
+            _ => {}
+        }
+    }
+    (alt, ctrl, shift, logo)
 }
 
 /// Common resolutions for cycling through with keybindings.
@@ -1025,8 +1109,9 @@ fn next_resolution(current_w: u16, current_h: u16, direction: i32) -> (u16, u16)
     }
 }
 
-/// Initialize the Lua plugin runtime and load plugins from the config directory.
-fn init_plugins(state: &mut DinatorState) {
+/// Initialize the plugin runtimes (Lua + WASM) and load plugins from the config directory.
+/// Returns any plugin-registered keybindings.
+fn init_plugins(state: &mut DinatorState) -> Vec<PluginKeybinding> {
     let plugin_dir = std::env::var("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
@@ -1037,10 +1122,20 @@ fn init_plugins(state: &mut DinatorState) {
         })
         .join("desktopinator/plugins");
 
-    let mut runtime = dinator_lua::LuaRuntime::new();
-    if let Err(e) = runtime.load_plugins(&plugin_dir) {
-        tracing::warn!(error = %e, "failed to load plugins");
+    let mut lua_runtime = dinator_lua::LuaRuntime::new();
+    if let Err(e) = lua_runtime.load_plugins(&plugin_dir) {
+        tracing::warn!(error = %e, "failed to load Lua plugins");
     }
+
+    let mut wasm_runtime = dinator_wasm::WasmRuntime::new();
+    if let Err(e) = wasm_runtime.load_plugins(&plugin_dir) {
+        tracing::warn!(error = %e, "failed to load WASM plugins");
+    }
+
+    let mut runtime = dinator_plugin_api::CompositeRuntime::new(vec![
+        Box::new(lua_runtime),
+        Box::new(wasm_runtime),
+    ]);
 
     let plugin_count = runtime.plugin_info().len();
     let layout_count = runtime.layout_names().len();
@@ -1052,7 +1147,35 @@ fn init_plugins(state: &mut DinatorState) {
         );
     }
 
+    // Drain keybinding requests from plugins
+    let keybindings: Vec<PluginKeybinding> = runtime
+        .drain_keybinding_requests()
+        .into_iter()
+        .filter_map(|req| {
+            let keysym = key_name_to_keysym(&req.key)?;
+            let mods = parse_modifiers(&req.modifiers);
+            info!(
+                callback = %req.callback_id,
+                key = %req.key,
+                "registered plugin keybinding"
+            );
+            Some(PluginKeybinding {
+                mods,
+                keysym,
+                callback_id: req.callback_id,
+            })
+        })
+        .collect();
+
+    // Drain window rules from plugins
+    let window_rules = runtime.drain_window_rules();
+    if !window_rules.is_empty() {
+        info!(count = window_rules.len(), "registered plugin window rules");
+    }
+    state.window_rules = window_rules;
+
     state.plugin_runtime = Some(Box::new(runtime));
+    keybindings
 }
 
 /// Handle an IPC command from dinatorctl.

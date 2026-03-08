@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["plugins/wasm-grid"]
 members = [
     "crates/desktopinator",
     "crates/dinator-core",
@@ -7,6 +8,7 @@ members = [
     "crates/dinator-ipc",
     "crates/dinator-plugin-api",
     "crates/dinator-lua",
+    "crates/dinator-wasm",
     "crates/dinatorctl",
 ]
 

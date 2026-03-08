@@ -9,6 +9,7 @@ dinator-ipc = { path = "../dinator-ipc" }
 dinator-tiling = { path = "../dinator-tiling" }
 dinator-plugin-api = { path = "../dinator-plugin-api" }
 dinator-lua = { path = "../dinator-lua" }
+dinator-wasm = { path = "../dinator-wasm" }
 serde_json = { workspace = true }
 smithay = { workspace = true }
 calloop = { workspace = true }

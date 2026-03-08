@@ -1,0 +1,14 @@
+[package]
+name = "dinator-wasm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dinator-plugin-api = { path = "../dinator-plugin-api" }
+dinator-tiling = { path = "../dinator-tiling" }
+extism = "1.9"
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"

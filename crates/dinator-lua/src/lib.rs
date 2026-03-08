@@ -7,8 +7,8 @@ use mlua::prelude::*;
 use tracing::{info, warn};
 
 use dinator_plugin_api::{
-    KeybindingRequest, PluginEvent, PluginInfo, PluginRuntime, RawPluginManifest,
-    parse_lua_manifest,
+    KeybindingRequest, PluginAction, PluginEvent, PluginInfo, PluginRuntime, RawPluginManifest,
+    WindowRule, parse_lua_manifest,
 };
 use dinator_tiling::{Layout, Placement, Rect, WindowId};
 
@@ -38,6 +38,10 @@ struct LuaPluginData {
     callbacks: HashMap<String, LuaRegistryKey>,
     /// Source path or name (for reload).
     source_path: Option<String>,
+    /// Queued actions to be drained by the compositor.
+    action_queue: Vec<PluginAction>,
+    /// Window rules registered by the plugin.
+    window_rules: Vec<WindowRule>,
 }
 
 /// The Lua plugin runtime. Manages one Lua VM per plugin.
@@ -80,6 +84,8 @@ impl LuaRuntime {
                 keybinding_requests: Vec::new(),
                 callbacks: HashMap::new(),
                 source_path,
+                action_queue: Vec::new(),
+                window_rules: Vec::new(),
             }),
         });
 
@@ -162,6 +168,121 @@ impl LuaRuntime {
                 Ok(())
             }).map_err(lua_err)?;
             dt.set("log", log_fn).map_err(lua_err)?;
+        }
+
+        // desktopinator.spawn(cmd, args?)
+        {
+            let state_ref = Rc::clone(state);
+            let spawn_fn = state.lua.create_function(
+                move |_lua, (cmd, args): (String, Option<LuaTable>)| {
+                    let args_vec = if let Some(tbl) = args {
+                        tbl.sequence_values::<String>()
+                            .collect::<LuaResult<Vec<_>>>()?
+                    } else {
+                        Vec::new()
+                    };
+                    state_ref.data.borrow_mut().action_queue.push(
+                        PluginAction::Spawn { cmd, args: args_vec },
+                    );
+                    Ok(())
+                },
+            ).map_err(lua_err)?;
+            dt.set("spawn", spawn_fn).map_err(lua_err)?;
+        }
+
+        // desktopinator.set_layout(name)
+        {
+            let state_ref = Rc::clone(state);
+            let set_layout_fn = state.lua.create_function(
+                move |_lua, name: String| {
+                    state_ref.data.borrow_mut().action_queue.push(
+                        PluginAction::SetLayout { name },
+                    );
+                    Ok(())
+                },
+            ).map_err(lua_err)?;
+            dt.set("set_layout", set_layout_fn).map_err(lua_err)?;
+        }
+
+        // desktopinator.focus_next()
+        {
+            let state_ref = Rc::clone(state);
+            let fn_ = state.lua.create_function(move |_lua, ()| {
+                state_ref.data.borrow_mut().action_queue.push(PluginAction::FocusNext);
+                Ok(())
+            }).map_err(lua_err)?;
+            dt.set("focus_next", fn_).map_err(lua_err)?;
+        }
+
+        // desktopinator.focus_prev()
+        {
+            let state_ref = Rc::clone(state);
+            let fn_ = state.lua.create_function(move |_lua, ()| {
+                state_ref.data.borrow_mut().action_queue.push(PluginAction::FocusPrev);
+                Ok(())
+            }).map_err(lua_err)?;
+            dt.set("focus_prev", fn_).map_err(lua_err)?;
+        }
+
+        // desktopinator.close_window()
+        {
+            let state_ref = Rc::clone(state);
+            let fn_ = state.lua.create_function(move |_lua, ()| {
+                state_ref.data.borrow_mut().action_queue.push(PluginAction::CloseWindow);
+                Ok(())
+            }).map_err(lua_err)?;
+            dt.set("close_window", fn_).map_err(lua_err)?;
+        }
+
+        // desktopinator.swap_master()
+        {
+            let state_ref = Rc::clone(state);
+            let fn_ = state.lua.create_function(move |_lua, ()| {
+                state_ref.data.borrow_mut().action_queue.push(PluginAction::SwapMaster);
+                Ok(())
+            }).map_err(lua_err)?;
+            dt.set("swap_master", fn_).map_err(lua_err)?;
+        }
+
+        // desktopinator.toggle_float()
+        {
+            let state_ref = Rc::clone(state);
+            let fn_ = state.lua.create_function(move |_lua, ()| {
+                state_ref.data.borrow_mut().action_queue.push(PluginAction::ToggleFloat);
+                Ok(())
+            }).map_err(lua_err)?;
+            dt.set("toggle_float", fn_).map_err(lua_err)?;
+        }
+
+        // desktopinator.toggle_fullscreen()
+        {
+            let state_ref = Rc::clone(state);
+            let fn_ = state.lua.create_function(move |_lua, ()| {
+                state_ref.data.borrow_mut().action_queue.push(PluginAction::ToggleFullscreen);
+                Ok(())
+            }).map_err(lua_err)?;
+            dt.set("toggle_fullscreen", fn_).map_err(lua_err)?;
+        }
+
+        // desktopinator.window_rule({ app_id = "...", title = "...", float = true, fullscreen = false })
+        {
+            let state_ref = Rc::clone(state);
+            let window_rule_fn = state.lua.create_function(
+                move |_lua, tbl: LuaTable| {
+                    let app_id: Option<String> = tbl.get("app_id").ok();
+                    let title: Option<String> = tbl.get("title").ok();
+                    let float: bool = tbl.get("float").unwrap_or(false);
+                    let fullscreen: bool = tbl.get("fullscreen").unwrap_or(false);
+                    state_ref.data.borrow_mut().window_rules.push(WindowRule {
+                        app_id,
+                        title,
+                        float,
+                        fullscreen,
+                    });
+                    Ok(())
+                },
+            ).map_err(lua_err)?;
+            dt.set("window_rule", window_rule_fn).map_err(lua_err)?;
         }
 
         state.lua.globals().set("desktopinator", dt).map_err(lua_err)?;
@@ -342,6 +463,24 @@ impl PluginRuntime for LuaRuntime {
                 return;
             }
         }
+    }
+
+    fn drain_actions(&mut self) -> Vec<PluginAction> {
+        let mut all = Vec::new();
+        for plugin in &self.plugins {
+            let mut data = plugin.data.borrow_mut();
+            all.append(&mut data.action_queue);
+        }
+        all
+    }
+
+    fn drain_window_rules(&mut self) -> Vec<WindowRule> {
+        let mut all = Vec::new();
+        for plugin in &self.plugins {
+            let mut data = plugin.data.borrow_mut();
+            all.append(&mut data.window_rules);
+        }
+        all
     }
 
     fn plugin_info(&self) -> Vec<PluginInfo> {
@@ -587,5 +726,70 @@ end)
 
         assert_eq!(placements.len(), 1);
         assert_eq!(placements[0].rect, area);
+    }
+
+    #[test]
+    fn test_plugin_actions() {
+        let source = r#"
+--[[ [manifest]
+id = "test-actions"
+name = "Test Actions"
+version = "0.1.0"
+]]
+
+desktopinator.on("window_opened", function(e)
+    desktopinator.spawn("echo", {"hello"})
+    desktopinator.set_layout("grid")
+    desktopinator.focus_next()
+end)
+"#;
+
+        let mut runtime = LuaRuntime::new();
+        runtime.load_plugin_source("test-actions", source).unwrap();
+
+        // No actions yet
+        assert!(runtime.drain_actions().is_empty());
+
+        // Trigger event that queues actions
+        runtime.on_event(&PluginEvent::WindowOpened {
+            id: 1,
+            app_id: Some("test".to_string()),
+            title: None,
+        });
+
+        let actions = runtime.drain_actions();
+        assert_eq!(actions.len(), 3);
+        assert!(matches!(&actions[0], PluginAction::Spawn { cmd, .. } if cmd == "echo"));
+        assert!(matches!(&actions[1], PluginAction::SetLayout { name } if name == "grid"));
+        assert!(matches!(&actions[2], PluginAction::FocusNext));
+
+        // Queue should be empty after drain
+        assert!(runtime.drain_actions().is_empty());
+    }
+
+    #[test]
+    fn test_window_rules() {
+        let source = r#"
+--[[ [manifest]
+id = "test-rules"
+name = "Test Rules"
+version = "0.1.0"
+]]
+
+desktopinator.window_rule({ app_id = "mpv", float = true })
+desktopinator.window_rule({ title = "Settings", fullscreen = true })
+"#;
+
+        let mut runtime = LuaRuntime::new();
+        runtime.load_plugin_source("test-rules", source).unwrap();
+
+        let rules = runtime.drain_window_rules();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].app_id.as_deref(), Some("mpv"));
+        assert!(rules[0].float);
+        assert!(!rules[0].fullscreen);
+        assert_eq!(rules[1].title.as_deref(), Some("Settings"));
+        assert!(!rules[1].float);
+        assert!(rules[1].fullscreen);
     }
 }

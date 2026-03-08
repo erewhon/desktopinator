@@ -30,8 +30,8 @@ use tracing::info;
 use dinator_ipc::IpcEvent;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 
-use dinator_plugin_api::{PluginEvent, PluginRuntime};
-use dinator_tiling::{ColumnLayout, Layout, MonocleLayout, Rect, WindowId};
+use dinator_plugin_api::{PluginAction, PluginEvent, PluginRuntime, WindowRule};
+use dinator_tiling::{CenteredMasterLayout, ColumnLayout, DwindleLayout, Layout, MonocleLayout, Rect, WindowId};
 
 /// Thread-safe broadcaster for IPC events.
 /// IPC client threads register their sender here; the compositor emits events.
@@ -81,6 +81,12 @@ pub struct DinatorState {
 
     // Plugin system
     pub plugin_runtime: Option<Box<dyn PluginRuntime>>,
+
+    /// Plugin-registered keybindings: (keysym, alt, ctrl, shift, logo, callback_id).
+    pub plugin_keybindings: Vec<(u32, bool, bool, bool, bool, String)>,
+
+    /// Window rules from plugins: match criteria → auto-apply float/fullscreen.
+    pub window_rules: Vec<WindowRule>,
 }
 
 impl DinatorState {
@@ -135,6 +141,8 @@ impl DinatorState {
             fullscreen: HashSet::new(),
             event_broadcaster: Arc::new(Mutex::new(Vec::new())),
             plugin_runtime: None,
+            plugin_keybindings: Vec::new(),
+            window_rules: Vec::new(),
         }
     }
 
@@ -170,6 +178,64 @@ impl DinatorState {
                 runtime.on_event(&pe);
             }
         }
+
+        // Execute any actions queued by plugin event handlers
+        self.execute_plugin_actions();
+    }
+
+    /// Drain and execute any pending plugin actions.
+    pub fn execute_plugin_actions(&mut self) {
+        let actions = if let Some(ref mut runtime) = self.plugin_runtime {
+            runtime.drain_actions()
+        } else {
+            return;
+        };
+
+        for action in actions {
+            match action {
+                PluginAction::Spawn { cmd, args } => {
+                    info!(cmd = %cmd, "plugin action: spawn");
+                    if let Err(e) = std::process::Command::new(&cmd).args(&args).spawn() {
+                        info!(error = %e, "plugin spawn failed");
+                    }
+                }
+                PluginAction::SetLayout { name } => {
+                    info!(layout = %name, "plugin action: set_layout");
+                    if self.set_layout(&name) {
+                        let output = self.space.outputs().next().cloned();
+                        if let Some(output) = output {
+                            self.retile(&output);
+                        }
+                    }
+                }
+                PluginAction::FocusNext => self.focus_next(),
+                PluginAction::FocusPrev => self.focus_prev(),
+                PluginAction::CloseWindow => self.close_focused_window(),
+                PluginAction::SwapMaster => self.swap_master(),
+                PluginAction::ToggleFloat => { self.toggle_float(); }
+                PluginAction::ToggleFullscreen => { self.toggle_fullscreen(); }
+                PluginAction::Log { message } => {
+                    info!(plugin_log = %message);
+                }
+            }
+        }
+    }
+
+    /// Check if a window matches any window rule and return the first match.
+    pub fn match_window_rule(&self, app_id: Option<&str>, title: Option<&str>) -> Option<&WindowRule> {
+        self.window_rules.iter().find(|rule| {
+            let app_match = match (&rule.app_id, app_id) {
+                (Some(pattern), Some(id)) => id == pattern,
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            let title_match = match (&rule.title, title) {
+                (Some(pattern), Some(t)) => t.contains(pattern.as_str()),
+                (Some(_), None) => false,
+                (None, _) => true,
+            };
+            app_match && title_match
+        })
     }
 
     /// Re-tile all windows on the given output.
@@ -241,6 +307,14 @@ impl DinatorState {
                 self.layout = Box::new(MonocleLayout::default());
                 return true;
             }
+            "dwindle" => {
+                self.layout = Box::new(DwindleLayout::default());
+                return true;
+            }
+            "centered" => {
+                self.layout = Box::new(CenteredMasterLayout::default());
+                return true;
+            }
             _ => {}
         }
 
@@ -257,7 +331,12 @@ impl DinatorState {
 
     /// List all available layout names (built-in + plugin-provided).
     pub fn available_layouts(&self) -> Vec<String> {
-        let mut names = vec!["column".to_string(), "monocle".to_string()];
+        let mut names = vec![
+            "column".to_string(),
+            "monocle".to_string(),
+            "dwindle".to_string(),
+            "centered".to_string(),
+        ];
         if let Some(ref runtime) = self.plugin_runtime {
             names.extend(runtime.layout_names());
         }
