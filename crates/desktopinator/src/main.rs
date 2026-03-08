@@ -239,10 +239,12 @@ fn run_winit() -> anyhow::Result<()> {
             |_, socket, state| {
                 if let Some(stream) = socket.accept()? {
                     let client_state = Arc::new(dinator_core::ClientState::default());
-                    state
+                    if let Err(e) = state
                         .display_handle
                         .insert_client(stream, client_state)
-                        .unwrap();
+                    {
+                        tracing::error!("failed to insert client: {e}");
+                    }
                 }
                 Ok(PostAction::Continue)
             },
@@ -313,7 +315,9 @@ fn run_winit() -> anyhow::Result<()> {
                     );
                 }
 
-                backend.submit(Some(&[damage])).unwrap();
+                if let Err(e) = backend.submit(Some(&[damage])) {
+                    tracing::error!("backend submit error: {e:?}");
+                }
 
                 state.space.elements().for_each(|window| {
                     window.send_frame(&output, state.start_time.elapsed(), None, |_, _| {
@@ -336,8 +340,12 @@ fn run_winit() -> anyhow::Result<()> {
     event_loop
         .run(Duration::from_millis(16), &mut state, |state| {
             let display_ptr = &mut state.display as *mut Display<DinatorState>;
-            unsafe { &mut *display_ptr }.dispatch_clients(state).unwrap();
-            state.display.flush_clients().unwrap();
+            if let Err(e) = unsafe { &mut *display_ptr }.dispatch_clients(state) {
+                tracing::error!("dispatch_clients error: {e}");
+            }
+            if let Err(e) = state.display.flush_clients() {
+                tracing::error!("flush_clients error: {e}");
+            }
         })
         .context("event loop error")?;
 
@@ -532,10 +540,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
             |_, socket, state| {
                 if let Some(stream) = socket.accept()? {
                     let client_state = Arc::new(dinator_core::ClientState::default());
-                    state
+                    if let Err(e) = state
                         .display_handle
                         .insert_client(stream, client_state)
-                        .unwrap();
+                    {
+                        tracing::error!("failed to insert client: {e}");
+                    }
                 }
                 Ok(PostAction::Continue)
             },
@@ -583,7 +593,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                     y,
                     button_mask,
                 } => {
-                    let pointer = state.seat.get_pointer().unwrap();
+                    let Some(pointer) = state.seat.get_pointer() else { return };
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Pointer motion
@@ -652,7 +662,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                                     let window = window.clone();
                                     state.space.raise_element(&window, true);
                                     if let Some(toplevel) = window.toplevel() {
-                                        let keyboard = state.seat.get_keyboard().unwrap();
+                                        let Some(keyboard) = state.seat.get_keyboard() else { return };
                                         keyboard.set_focus(
                                             state,
                                             Some(toplevel.wl_surface().clone()),
@@ -670,7 +680,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                     *pending_resize_input.lock().unwrap() = Some((width, height));
                 }
                 VncInputEvent::Key { keysym, pressed } => {
-                    let keyboard = state.seat.get_keyboard().unwrap();
+                    let Some(keyboard) = state.seat.get_keyboard() else { return };
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Convert X11 keysym to XKB keycode
@@ -888,29 +898,30 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
             }
 
             // Render to offscreen buffer
-            {
-                let mut target = renderer
-                    .bind(&mut renderbuffer)
-                    .expect("failed to bind renderbuffer");
-
-                if let Some(elements) = build_render_elements(&mut renderer, state, output) {
-                    let _ = damage_tracker.render_output(
-                        &mut renderer,
-                        &mut target,
-                        0,
-                        &elements,
-                        [0.1, 0.1, 0.1, 1.0],
-                    );
-                }
-
-                // Export pixels to VNC framebuffer
-                let region = Rectangle::from_size(
-                    Size::from((current_width as i32, current_height as i32)),
-                );
-                if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
-                    if let Ok(pixels) = renderer.map_texture(&mapping) {
-                        let _ = pixel_tx.try_send(pixels.to_vec());
+            match renderer.bind(&mut renderbuffer) {
+                Ok(mut target) => {
+                    if let Some(elements) = build_render_elements(&mut renderer, state, output) {
+                        let _ = damage_tracker.render_output(
+                            &mut renderer,
+                            &mut target,
+                            0,
+                            &elements,
+                            [0.1, 0.1, 0.1, 1.0],
+                        );
                     }
+
+                    // Export pixels to VNC framebuffer
+                    let region = Rectangle::from_size(
+                        Size::from((current_width as i32, current_height as i32)),
+                    );
+                    if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
+                        if let Ok(pixels) = renderer.map_texture(&mapping) {
+                            let _ = pixel_tx.try_send(pixels.to_vec());
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("failed to bind renderbuffer: {e:?}");
                 }
             }
 
@@ -935,10 +946,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
     event_loop
         .run(Duration::from_millis(16), &mut state, |state| {
             let display_ptr = &mut state.display as *mut Display<DinatorState>;
-            unsafe { &mut *display_ptr }
-                .dispatch_clients(state)
-                .unwrap();
-            state.display.flush_clients().unwrap();
+            if let Err(e) = unsafe { &mut *display_ptr }.dispatch_clients(state) {
+                tracing::error!("dispatch_clients error: {e}");
+            }
+            if let Err(e) = state.display.flush_clients() {
+                tracing::error!("flush_clients error: {e}");
+            }
         })
         .context("event loop error")?;
 

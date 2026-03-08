@@ -131,8 +131,9 @@ impl XdgShellHandler for DinatorState {
 
         // Give keyboard focus to the new window
         let serial = SERIAL_COUNTER.next_serial();
-        let keyboard = self.seat.get_keyboard().unwrap();
-        keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+        }
 
         // Emit IPC event
         let (app_id, title) = compositor::with_states(surface.wl_surface(), |states| {
@@ -167,12 +168,13 @@ impl XdgShellHandler for DinatorState {
                 if let Some(window) = self.window_map.get(&next_id) {
                     if let Some(toplevel) = window.toplevel() {
                         let serial = SERIAL_COUNTER.next_serial();
-                        let keyboard = self.seat.get_keyboard().unwrap();
-                        keyboard.set_focus(
-                            self,
-                            Some(toplevel.wl_surface().clone()),
-                            serial,
-                        );
+                        if let Some(keyboard) = self.seat.get_keyboard() {
+                            keyboard.set_focus(
+                                self,
+                                Some(toplevel.wl_surface().clone()),
+                                serial,
+                            );
+                        }
                     }
                 }
             }
@@ -332,12 +334,13 @@ impl XdgActivationHandler for DinatorState {
                     self.space.raise_element(&window, true);
                     if let Some(toplevel) = window.toplevel() {
                         let serial = SERIAL_COUNTER.next_serial();
-                        let keyboard = self.seat.get_keyboard().unwrap();
-                        keyboard.set_focus(
-                            self,
-                            Some(toplevel.wl_surface().clone()),
-                            serial,
-                        );
+                        if let Some(keyboard) = self.seat.get_keyboard() {
+                            keyboard.set_focus(
+                                self,
+                                Some(toplevel.wl_surface().clone()),
+                                serial,
+                            );
+                        }
                     }
                 }
             }

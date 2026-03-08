@@ -297,7 +297,7 @@ impl DinatorState {
 
     /// Close the currently focused window.
     pub fn close_focused_window(&mut self) {
-        let keyboard = self.seat.get_keyboard().unwrap();
+        let Some(keyboard) = self.seat.get_keyboard() else { return };
         let focus = keyboard.current_focus();
         if let Some(surface) = focus {
             if let Some(id) = self.surface_to_id.get(&surface) {
@@ -326,7 +326,7 @@ impl DinatorState {
             return;
         }
 
-        let keyboard = self.seat.get_keyboard().unwrap();
+        let Some(keyboard) = self.seat.get_keyboard() else { return };
         let current_focus = keyboard.current_focus();
 
         let focused_idx = current_focus
@@ -350,7 +350,7 @@ impl DinatorState {
             return;
         }
 
-        let keyboard = self.seat.get_keyboard().unwrap();
+        let Some(keyboard) = self.seat.get_keyboard() else { return };
         let current_focus = keyboard.current_focus();
 
         let current_idx = current_focus

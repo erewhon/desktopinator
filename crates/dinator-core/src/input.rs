@@ -40,7 +40,7 @@ impl DinatorState {
         let keycode = event.key_code();
         let press_state = event.state();
 
-        let keyboard = self.seat.get_keyboard().unwrap();
+        let Some(keyboard) = self.seat.get_keyboard() else { return };
 
         let action = keyboard.input::<Option<KeyAction>, _>(
             self,
@@ -117,7 +117,7 @@ impl DinatorState {
         let pos = event.position_transformed(output_geo.size);
         let serial = SERIAL_COUNTER.next_serial();
 
-        let pointer = self.seat.get_pointer().unwrap();
+        let Some(pointer) = self.seat.get_pointer() else { return };
 
         let under = self.space.element_under(pos);
         let surface_under = under.and_then(|(window, loc)| {
@@ -148,7 +148,7 @@ impl DinatorState {
 
     fn handle_pointer_button<B: InputBackend>(&mut self, event: impl PointerButtonEvent<B>) {
         let serial = SERIAL_COUNTER.next_serial();
-        let pointer = self.seat.get_pointer().unwrap();
+        let Some(pointer) = self.seat.get_pointer() else { return };
 
         pointer.button(
             self,
@@ -169,7 +169,7 @@ impl DinatorState {
                 let window = window.clone();
                 self.space.raise_element(&window, true);
                 if let Some(toplevel) = window.toplevel() {
-                    let keyboard = self.seat.get_keyboard().unwrap();
+                    let Some(keyboard) = self.seat.get_keyboard() else { return };
                     keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
                 }
             }
@@ -177,7 +177,7 @@ impl DinatorState {
     }
 
     fn handle_pointer_axis<B: InputBackend>(&mut self, event: impl PointerAxisEvent<B>) {
-        let pointer = self.seat.get_pointer().unwrap();
+        let Some(pointer) = self.seat.get_pointer() else { return };
 
         let mut frame = AxisFrame::new(event.time_msec());
 
