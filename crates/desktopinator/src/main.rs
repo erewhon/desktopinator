@@ -554,7 +554,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                 }
             });
 
-            // RDP server
+            // RDP server — generate self-signed TLS cert for RDP clients (mstsc requires TLS)
             let display = DinatorRdpDisplay {
                 width: rdp_width.clone(),
                 height: rdp_height.clone(),
@@ -563,14 +563,21 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
             let input_handler = DinatorRdpInputHandler {
                 tx: rdp_input_tx,
             };
+            let tls_acceptor = match make_rdp_tls_acceptor() {
+                Ok(acceptor) => acceptor,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to create RDP TLS acceptor");
+                    return;
+                }
+            };
             let mut server = ironrdp_server::RdpServer::builder()
                 .with_addr(([0, 0, 0, 0], rdp_port))
-                .with_no_security()
+                .with_tls(tls_acceptor)
                 .with_input_handler(input_handler)
                 .with_display_handler(display)
                 .build();
 
-            info!(port = rdp_port, "RDP server listening");
+            info!(port = rdp_port, "RDP server listening (TLS, no auth)");
             if let Err(e) = server.run().await {
                 tracing::error!(error = %e, "RDP server error");
             }
@@ -2089,6 +2096,34 @@ impl ironrdp_server::RdpServerInputHandler for DinatorRdpInputHandler {
             _ => {} // Button4/5 and RelMove not handled yet
         }
     }
+}
+
+/// Generate a self-signed TLS certificate and create a TlsAcceptor for the RDP server.
+///
+/// Microsoft Remote Desktop (mstsc) requires TLS — the no-security mode won't work.
+/// We generate a fresh self-signed cert at startup. No credentials are validated.
+fn make_rdp_tls_acceptor() -> anyhow::Result<ironrdp_server::tokio_rustls::TlsAcceptor> {
+    use ironrdp_server::tokio_rustls::rustls;
+    use std::sync::Arc;
+
+    // Ensure a crypto provider is installed (rustls requires this)
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .context("failed to generate self-signed certificate")?;
+    let cert_der = rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::try_from(cert.signing_key.serialize_der())
+        .map_err(|e| anyhow::anyhow!("failed to parse private key: {e}"))?;
+
+    let mut server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .context("bad certificate/key")?;
+    server_config.key_log = Arc::new(rustls::KeyLogFile::new());
+
+    Ok(ironrdp_server::tokio_rustls::TlsAcceptor::from(Arc::new(
+        server_config,
+    )))
 }
 
 /// Convert an RDP scan code (Windows/XT Set 1) to an XKB keycode (evdev + 8).
