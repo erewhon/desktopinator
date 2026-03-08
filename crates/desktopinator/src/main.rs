@@ -1,7 +1,10 @@
+mod ipc;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use dinator_ipc::{IpcCommand, IpcResponse};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
@@ -10,6 +13,8 @@ use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer};
 use smithay::desktop::space::SpaceRenderElements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::wayland::compositor;
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, PostAction};
 use smithay::reexports::wayland_server::{Display, ListeningSocket};
@@ -243,6 +248,28 @@ fn run_winit() -> anyhow::Result<()> {
             },
         )
         .map_err(|e| anyhow::anyhow!("failed to insert socket source: {e}"))?;
+
+    // IPC server (resize is a no-op in winit mode — window manager controls size)
+    let pending_resize_winit: Arc<std::sync::Mutex<Option<(u16, u16)>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let ipc_rx = ipc::start_ipc_server()?;
+    let output_for_ipc = output.clone();
+    event_loop
+        .handle()
+        .insert_source(ipc_rx, move |event, _, state| {
+            use smithay::reexports::calloop::channel;
+            let channel::Event::Msg(request) = event else {
+                return;
+            };
+            let response = handle_ipc_command(
+                &request.command,
+                state,
+                &output_for_ipc,
+                &pending_resize_winit,
+            );
+            (request.respond)(response);
+        })
+        .map_err(|e| anyhow::anyhow!("failed to insert IPC source: {e}"))?;
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut last_output_size = backend.window_size();
@@ -519,6 +546,26 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
     let pending_resize: Arc<std::sync::Mutex<Option<(u16, u16)>>> =
         Arc::new(std::sync::Mutex::new(None));
     let pending_resize_input = pending_resize.clone();
+    let pending_resize_ipc = pending_resize.clone();
+
+    // Start IPC server
+    let ipc_rx = ipc::start_ipc_server()?;
+    let output_for_ipc = output.clone();
+    event_loop
+        .handle()
+        .insert_source(ipc_rx, move |event, _, state| {
+            let channel::Event::Msg(request) = event else {
+                return;
+            };
+            let response = handle_ipc_command(
+                &request.command,
+                state,
+                &output_for_ipc,
+                &pending_resize_ipc,
+            );
+            (request.respond)(response);
+        })
+        .map_err(|e| anyhow::anyhow!("failed to insert IPC source: {e}"))?;
 
     // Handle VNC input events in the compositor event loop
     let output_for_input = output.clone();
@@ -894,6 +941,97 @@ fn next_resolution(current_w: u16, current_h: u16, direction: i32) -> (u16, u16)
             .find(|&&(w, h)| (w as u32 * h as u32) < current_pixels)
             .copied()
             .unwrap_or(*RESOLUTIONS.first().unwrap())
+    }
+}
+
+/// Handle an IPC command from dinatorctl.
+fn handle_ipc_command(
+    command: &IpcCommand,
+    state: &mut DinatorState,
+    _output: &Output,
+    pending_resize: &Arc<std::sync::Mutex<Option<(u16, u16)>>>,
+) -> IpcResponse {
+    match command {
+        IpcCommand::Resize { width, height } => {
+            info!(width, height, "IPC: resize");
+            *pending_resize.lock().unwrap() = Some((*width, *height));
+            IpcResponse::Ok {
+                message: Some(format!("resizing to {width}x{height}")),
+            }
+        }
+        IpcCommand::FocusNext => {
+            state.focus_next();
+            IpcResponse::Ok { message: None }
+        }
+        IpcCommand::FocusPrev => {
+            state.focus_prev();
+            IpcResponse::Ok { message: None }
+        }
+        IpcCommand::Close => {
+            state.close_focused_window();
+            IpcResponse::Ok { message: None }
+        }
+        IpcCommand::SwapMaster => {
+            state.swap_master();
+            IpcResponse::Ok { message: None }
+        }
+        IpcCommand::Spawn { cmd, args } => {
+            info!(cmd, ?args, "IPC: spawn");
+            match std::process::Command::new(cmd).args(args).spawn() {
+                Ok(_) => IpcResponse::Ok {
+                    message: Some(format!("spawned {cmd}")),
+                },
+                Err(e) => IpcResponse::Error {
+                    message: format!("failed to spawn {cmd}: {e}"),
+                },
+            }
+        }
+        IpcCommand::Quit => {
+            info!("IPC: quit");
+            state.loop_signal.stop();
+            IpcResponse::Ok { message: None }
+        }
+        IpcCommand::ListWindows => {
+            let windows: Vec<serde_json::Value> = state
+                .window_order
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let mut entry = serde_json::json!({
+                        "index": i,
+                        "id": id.0,
+                    });
+                    if let Some(window) = state.window_map.get(id) {
+                        if let Some(geo) = state.space.element_geometry(window) {
+                            entry["x"] = geo.loc.x.into();
+                            entry["y"] = geo.loc.y.into();
+                            entry["width"] = geo.size.w.into();
+                            entry["height"] = geo.size.h.into();
+                        }
+                        if let Some(toplevel) = window.toplevel() {
+                            let (app_id, title) = compositor::with_states(toplevel.wl_surface(), |states| {
+                                let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+                                let attrs = attrs.map(|d| d.lock().unwrap());
+                                (
+                                    attrs.as_ref().and_then(|a| a.app_id.clone()),
+                                    attrs.as_ref().and_then(|a| a.title.clone()),
+                                )
+                            });
+                            if let Some(app_id) = app_id {
+                                entry["app_id"] = app_id.into();
+                            }
+                            if let Some(title) = title {
+                                entry["title"] = title.into();
+                            }
+                        }
+                    }
+                    entry
+                })
+                .collect();
+            IpcResponse::Data {
+                data: serde_json::Value::Array(windows),
+            }
+        }
     }
 }
 

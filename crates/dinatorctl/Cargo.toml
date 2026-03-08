@@ -1,0 +1,9 @@
+[package]
+name = "dinatorctl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dinator-ipc = { path = "../dinator-ipc" }
+serde_json = { workspace = true }
+anyhow = { workspace = true }

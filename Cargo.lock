@@ -361,7 +361,9 @@ dependencies = [
  "anyhow",
  "calloop 0.14.4",
  "dinator-core",
+ "dinator-ipc",
  "rustvncserver",
+ "serde_json",
  "smithay",
  "tokio",
  "tracing",
@@ -390,8 +392,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dinator-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "dinator-tiling"
 version = "0.1.0"
+
+[[package]]
+name = "dinatorctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dinator-ipc",
+ "serde_json",
+]
 
 [[package]]
 name = "dispatch"
@@ -1441,6 +1460,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
