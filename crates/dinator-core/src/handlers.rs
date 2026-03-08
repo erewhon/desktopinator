@@ -325,6 +325,22 @@ impl TabletSeatHandler for DinatorState {}
 
 smithay::delegate_cursor_shape!(DinatorState);
 
+// --- Viewporter ---
+
+smithay::delegate_viewporter!(DinatorState);
+
+// --- Fractional Scale ---
+
+use smithay::wayland::fractional_scale::FractionalScaleHandler;
+
+impl FractionalScaleHandler for DinatorState {}
+
+smithay::delegate_fractional_scale!(DinatorState);
+
+// --- Single Pixel Buffer ---
+
+smithay::delegate_single_pixel_buffer!(DinatorState);
+
 // --- Output ---
 
 impl OutputHandler for DinatorState {

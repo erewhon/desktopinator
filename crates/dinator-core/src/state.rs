@@ -14,6 +14,9 @@ use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::xdg::XdgShellState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
+use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
@@ -38,6 +41,9 @@ pub struct DinatorState {
     pub xdg_decoration_state: XdgDecorationState,
     pub xdg_activation_state: XdgActivationState,
     pub cursor_shape_state: CursorShapeManagerState,
+    pub fractional_scale_state: FractionalScaleManagerState,
+    pub viewporter_state: ViewporterState,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
 
@@ -63,6 +69,9 @@ impl DinatorState {
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
+        let viewporter_state = ViewporterState::new::<Self>(&display_handle);
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "desktopinator");
 
@@ -80,6 +89,9 @@ impl DinatorState {
             xdg_decoration_state,
             xdg_activation_state,
             cursor_shape_state,
+            fractional_scale_state,
+            viewporter_state,
+            single_pixel_buffer_state,
             seat_state,
             seat,
             space,
