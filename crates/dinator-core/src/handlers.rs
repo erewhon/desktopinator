@@ -22,6 +22,7 @@ use smithay::wayland::output::OutputHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::wayland::selection::data_device::{
     ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
@@ -177,6 +178,41 @@ impl XdgShellHandler for DinatorState {
 }
 
 delegate_xdg_shell!(DinatorState);
+
+// --- XDG Decoration ---
+
+impl XdgDecorationHandler for DinatorState {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn request_mode(
+        &mut self,
+        toplevel: ToplevelSurface,
+        _mode: smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    ) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        // Always use server-side decorations in a tiling WM
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(Mode::ServerSide);
+        });
+        toplevel.send_configure();
+    }
+}
+
+smithay::delegate_xdg_decoration!(DinatorState);
 
 // --- Data Device ---
 

@@ -12,6 +12,7 @@ use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::wayland::compositor::CompositorState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shm::ShmState;
 
 use tracing::info;
@@ -30,6 +31,7 @@ pub struct DinatorState {
     pub xdg_shell_state: XdgShellState,
     pub shm_state: ShmState,
     pub data_device_state: DataDeviceState,
+    pub xdg_decoration_state: XdgDecorationState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
 
@@ -51,6 +53,7 @@ impl DinatorState {
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "desktopinator");
 
@@ -64,6 +67,7 @@ impl DinatorState {
             xdg_shell_state,
             shm_state,
             data_device_state,
+            xdg_decoration_state,
             seat_state,
             seat,
             space,

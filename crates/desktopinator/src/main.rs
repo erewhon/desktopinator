@@ -111,6 +111,24 @@ fn build_render_elements(
         }
     }
 
+    // Render cursor as a small white square at pointer position
+    if let Some(pointer) = state.seat.get_pointer() {
+        let pos = pointer.current_location();
+        let cursor_size = 8;
+        let cursor_buf = SolidColorBuffer::new((cursor_size, cursor_size), [1.0, 1.0, 1.0, 1.0]);
+        let cursor_loc: Point<i32, Physical> = (pos.x as i32, pos.y as i32).into();
+        elements.insert(
+            0,
+            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                &cursor_buf,
+                cursor_loc,
+                1.0,
+                1.0,
+                Kind::Cursor,
+            )),
+        );
+    }
+
     Some(elements)
 }
 
