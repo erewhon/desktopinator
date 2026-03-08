@@ -342,7 +342,7 @@ fn run_winit() -> anyhow::Result<()> {
         .context("event loop error")?;
 
     info!("shutting down");
-    Ok(())
+    cleanup_and_exit(0)
 }
 
 /// VNC input event sent from the VNC server thread to the compositor event loop.
@@ -900,7 +900,24 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
         .context("event loop error")?;
 
     info!("shutting down");
-    Ok(())
+    cleanup_and_exit(0)
+}
+
+/// Clean up resources and exit the process.
+///
+/// Background threads (IPC listener, tokio/VNC runtime) block on I/O that
+/// cannot be interrupted without significant complexity, so we clean up
+/// what we can and then exit the process.
+fn cleanup_and_exit(code: i32) -> ! {
+    let socket_path = dinator_ipc::socket_path();
+    if socket_path.exists() {
+        if let Err(e) = std::fs::remove_file(&socket_path) {
+            tracing::error!(path = %socket_path.display(), error = %e, "failed to remove IPC socket");
+        } else {
+            info!(path = %socket_path.display(), "removed IPC socket");
+        }
+    }
+    std::process::exit(code);
 }
 
 enum KeyAction {
