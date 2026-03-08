@@ -122,11 +122,33 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let headless = std::env::args().any(|a| a == "--headless");
+    let args: Vec<String> = std::env::args().collect();
+    let headless = args.iter().any(|a| a == "--headless");
 
     if headless {
+        // Parse --vnc-port PORT (default 5900)
+        let vnc_port = args
+            .windows(2)
+            .find(|w| w[0] == "--vnc-port")
+            .and_then(|w| w[1].parse::<u16>().ok())
+            .unwrap_or(5900);
+
+        // Parse --resolution WxH (default 1920x1080)
+        let (width, height) = args
+            .windows(2)
+            .find(|w| w[0] == "--resolution")
+            .and_then(|w| {
+                let parts: Vec<&str> = w[1].split('x').collect();
+                if parts.len() == 2 {
+                    Some((parts[0].parse::<u16>().ok()?, parts[1].parse::<u16>().ok()?))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or((1920, 1080));
+
         info!("starting desktopinator (headless)");
-        run_headless()
+        run_headless(width, height, vnc_port)
     } else {
         info!("starting desktopinator (winit)");
         run_winit()
@@ -284,7 +306,7 @@ enum VncInputEvent {
     Key { keysym: u32, pressed: bool },
 }
 
-fn run_headless() -> anyhow::Result<()> {
+fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::egl::context::EGLContext;
     use smithay::backend::egl::native::EGLSurfacelessDisplay;
@@ -300,10 +322,6 @@ fn run_headless() -> anyhow::Result<()> {
 
     use rustvncserver::server::ServerEvent;
     use rustvncserver::VncServer;
-
-    let width: u16 = 1920;
-    let height: u16 = 1080;
-    let vnc_port: u16 = 5900;
 
     // Create EGL display without a window
     let egl_display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }

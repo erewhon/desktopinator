@@ -58,6 +58,23 @@ impl CompositorHandler for DinatorState {
 
         if let Some(window) = found {
             window.on_commit();
+
+            // If the window committed a buffer that doesn't match its configured
+            // tiled size, force a re-configure to constrain it back.
+            // We use send_configure() instead of retile/send_pending_configure
+            // because the latter is a no-op when the pending size hasn't changed.
+            if let Some(toplevel) = window.toplevel() {
+                let configured_size = toplevel.current_state().size;
+                let actual = window.geometry().size;
+                if let Some(target) = configured_size {
+                    if actual != target {
+                        toplevel.with_pending_state(|state| {
+                            state.size = Some(target);
+                        });
+                        toplevel.send_configure();
+                    }
+                }
+            }
         }
     }
 }

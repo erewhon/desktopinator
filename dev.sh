@@ -14,6 +14,8 @@ echo ":: starting compositor (log: $LOGFILE)"
 DINATOR_ARGS=()
 if [ "${HEADLESS:-}" = "1" ]; then
     DINATOR_ARGS+=(--headless)
+    [ -n "${VNC_PORT:-}" ] && DINATOR_ARGS+=(--vnc-port "$VNC_PORT")
+    [ -n "${RESOLUTION:-}" ] && DINATOR_ARGS+=(--resolution "$RESOLUTION")
 fi
 cargo run -- "${DINATOR_ARGS[@]}" 2>&1 | tee "$LOGFILE" &
 COMPOSITOR_PID=$!
