@@ -15,6 +15,7 @@ DINATOR_ARGS=()
 if [ "${HEADLESS:-}" = "1" ]; then
     DINATOR_ARGS+=(--headless)
     [ -n "${VNC_PORT:-}" ] && DINATOR_ARGS+=(--vnc-port "$VNC_PORT")
+    [ -n "${RDP_PORT:-}" ] && DINATOR_ARGS+=(--rdp-port "$RDP_PORT")
     [ -n "${RESOLUTION:-}" ] && DINATOR_ARGS+=(--resolution "$RESOLUTION")
 fi
 cargo run --bin desktopinator -- "${DINATOR_ARGS[@]}" 2>&1 | tee "$LOGFILE" &

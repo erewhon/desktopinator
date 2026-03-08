@@ -157,6 +157,13 @@ fn main() -> anyhow::Result<()> {
             .and_then(|w| w[1].parse::<u16>().ok())
             .unwrap_or(5900);
 
+        // Parse --rdp-port PORT (default 3389)
+        let rdp_port = args
+            .windows(2)
+            .find(|w| w[0] == "--rdp-port")
+            .and_then(|w| w[1].parse::<u16>().ok())
+            .unwrap_or(3389);
+
         // Parse --resolution WxH (default 1920x1080)
         let (width, height) = args
             .windows(2)
@@ -172,7 +179,7 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or((1920, 1080));
 
         info!("starting desktopinator (headless)");
-        run_headless(width, height, vnc_port)
+        run_headless(width, height, vnc_port, rdp_port)
     } else {
         info!("starting desktopinator (winit)");
         run_winit()
@@ -367,7 +374,16 @@ enum VncInputEvent {
     ResizeOutput { width: u16, height: u16 },
 }
 
-fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
+/// RDP input events bridged from the RDP server thread to the compositor event loop.
+enum RdpInputEvent {
+    MouseMove { x: u16, y: u16 },
+    MouseButton { button: u32, pressed: bool },
+    MouseScroll { value: i16 },
+    /// Already converted to XKB keycode (evdev + 8)
+    Key { keycode: u32, pressed: bool },
+}
+
+fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow::Result<()> {
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::egl::context::EGLContext;
     use smithay::backend::egl::native::EGLSurfacelessDisplay;
@@ -492,6 +508,76 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
     });
 
     info!(port = vnc_port, "VNC server started");
+
+    // --- RDP Server ---
+    let (rdp_pixel_tx, rdp_pixel_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(2);
+    let (rdp_input_tx, rdp_input_rx): (channel::Sender<RdpInputEvent>, Channel<RdpInputEvent>) =
+        channel::channel();
+    // Shared sender for display updates — swapped each time a new RDP client connects
+    let rdp_update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>> =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let rdp_update_tx_adapter = rdp_update_tx.clone();
+    let rdp_width = Arc::new(std::sync::atomic::AtomicU16::new(width));
+    let rdp_height = Arc::new(std::sync::atomic::AtomicU16::new(height));
+    let rdp_width_adapter = rdp_width.clone();
+    let rdp_height_adapter = rdp_height.clone();
+    let rdp_width_render = rdp_width.clone();
+    let rdp_height_render = rdp_height.clone();
+    let rdp_update_tx_render = rdp_update_tx.clone();
+
+    // Spawn adapter task: receives raw pixels, wraps in BitmapUpdate, sends to RDP display
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Runtime::new().expect("failed to create RDP tokio runtime");
+        rt.block_on(async {
+            // Pixel adapter task
+            let update_tx = rdp_update_tx_adapter.clone();
+            let w_ref = rdp_width_adapter;
+            let h_ref = rdp_height_adapter;
+            let mut pixel_rx = rdp_pixel_rx;
+            tokio::spawn(async move {
+                while let Some(pixels) = pixel_rx.recv().await {
+                    let w = w_ref.load(std::sync::atomic::Ordering::Relaxed);
+                    let h = h_ref.load(std::sync::atomic::Ordering::Relaxed);
+                    let guard = update_tx.lock().await;
+                    if let Some(ref tx) = *guard {
+                        let bitmap = ironrdp_server::BitmapUpdate {
+                            x: 0,
+                            y: 0,
+                            width: std::num::NonZeroU16::new(w).unwrap(),
+                            height: std::num::NonZeroU16::new(h).unwrap(),
+                            format: ironrdp_server::PixelFormat::RgbA32,
+                            data: bytes::Bytes::from(pixels),
+                            stride: std::num::NonZeroUsize::new(w as usize * 4).unwrap(),
+                        };
+                        let _ = tx.try_send(ironrdp_server::DisplayUpdate::Bitmap(bitmap));
+                    }
+                }
+            });
+
+            // RDP server
+            let display = DinatorRdpDisplay {
+                width: rdp_width.clone(),
+                height: rdp_height.clone(),
+                update_tx: rdp_update_tx.clone(),
+            };
+            let input_handler = DinatorRdpInputHandler {
+                tx: rdp_input_tx,
+            };
+            let mut server = ironrdp_server::RdpServer::builder()
+                .with_addr(([0, 0, 0, 0], rdp_port))
+                .with_no_security()
+                .with_input_handler(input_handler)
+                .with_display_handler(display)
+                .build();
+
+            info!(port = rdp_port, "RDP server listening");
+            if let Err(e) = server.run().await {
+                tracing::error!(error = %e, "RDP server error");
+            }
+        });
+    });
+
+    info!(port = rdp_port, "RDP server started");
 
     let mut event_loop: EventLoop<DinatorState> =
         EventLoop::try_new().context("failed to create event loop")?;
@@ -890,6 +976,253 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
         })
         .map_err(|e| anyhow::anyhow!("failed to insert VNC input source: {e}"))?;
 
+    // Handle RDP input events in the compositor event loop
+    let output_for_rdp = output.clone();
+    let pending_resize_rdp = pending_resize.clone();
+    event_loop
+        .handle()
+        .insert_source(rdp_input_rx, move |event, _, state| {
+            let channel::Event::Msg(event) = event else {
+                return;
+            };
+            match event {
+                RdpInputEvent::MouseMove { x, y } => {
+                    let Some(pointer) = state.seat.get_pointer() else { return };
+                    let serial = SERIAL_COUNTER.next_serial();
+                    let pos = (x as f64, y as f64);
+                    let under = state.space.element_under(pos);
+                    let surface_under = under.and_then(|(window, loc)| {
+                        use smithay::desktop::WindowSurfaceType;
+                        let rel = (pos.0 - loc.x as f64, pos.1 - loc.y as f64);
+                        window
+                            .surface_under(rel, WindowSurfaceType::ALL)
+                            .map(|(s, offset)| {
+                                (
+                                    s,
+                                    smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                                        loc.x as f64 + offset.x as f64,
+                                        loc.y as f64 + offset.y as f64,
+                                    )),
+                                )
+                            })
+                    });
+                    pointer.motion(
+                        state,
+                        surface_under,
+                        &MotionEvent {
+                            location: pos.into(),
+                            serial,
+                            time: 0,
+                        },
+                    );
+                    pointer.frame(state);
+                }
+                RdpInputEvent::MouseButton { button, pressed } => {
+                    let Some(pointer) = state.seat.get_pointer() else { return };
+                    let serial = SERIAL_COUNTER.next_serial();
+                    let btn_state = if pressed {
+                        smithay::backend::input::ButtonState::Pressed
+                    } else {
+                        smithay::backend::input::ButtonState::Released
+                    };
+                    pointer.button(
+                        state,
+                        &ButtonEvent {
+                            button,
+                            state: btn_state,
+                            serial,
+                            time: 0,
+                        },
+                    );
+                    pointer.frame(state);
+                    // Click to focus
+                    if pressed {
+                        let loc = pointer.current_location();
+                        if let Some((window, _)) = state.space.element_under(loc) {
+                            let window = window.clone();
+                            state.space.raise_element(&window, true);
+                            if let Some(toplevel) = window.toplevel() {
+                                let Some(keyboard) = state.seat.get_keyboard() else { return };
+                                keyboard.set_focus(
+                                    state,
+                                    Some(toplevel.wl_surface().clone()),
+                                    SERIAL_COUNTER.next_serial(),
+                                );
+                            }
+                        }
+                    }
+                }
+                RdpInputEvent::MouseScroll { value } => {
+                    let Some(pointer) = state.seat.get_pointer() else { return };
+                    use smithay::backend::input::Axis;
+                    use smithay::input::pointer::AxisFrame;
+                    // RDP scroll values: positive = scroll down, negative = scroll up
+                    // Each RDP unit is 120 per notch; convert to reasonable pixel amounts
+                    let amount = value as f64 * 15.0 / 120.0;
+                    let mut frame = AxisFrame::new(0);
+                    frame = frame.value(Axis::Vertical, amount);
+                    pointer.axis(state, frame);
+                    pointer.frame(state);
+                }
+                RdpInputEvent::Key { keycode, pressed } => {
+                    let Some(keyboard) = state.seat.get_keyboard() else { return };
+                    let serial = SERIAL_COUNTER.next_serial();
+                    let key_state = if pressed {
+                        KeyState::Pressed
+                    } else {
+                        KeyState::Released
+                    };
+                    // Check for compositor keybindings (Alt+key)
+                    let plugin_bindings = state.plugin_keybindings.clone();
+                    let action = keyboard.input::<Option<KeyAction>, _>(
+                        state,
+                        keycode.into(),
+                        key_state,
+                        serial,
+                        0,
+                        |_state, modifiers, ksym| {
+                            let sym = ksym.modified_sym();
+                            if modifiers.alt {
+                                let ws = keysym_to_workspace(sym.raw());
+                                if let Some(n) = ws {
+                                    if key_state == KeyState::Pressed {
+                                        let action = if modifiers.shift {
+                                            KeyAction::MoveToWorkspace(n)
+                                        } else {
+                                            KeyAction::SwitchWorkspace(n)
+                                        };
+                                        return FilterResult::Intercept(Some(action));
+                                    } else {
+                                        return FilterResult::Intercept(None);
+                                    }
+                                }
+                                match sym.raw() {
+                                    keysyms::KEY_Return | keysyms::KEY_j | keysyms::KEY_k
+                                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
+                                    | keysyms::KEY_h | keysyms::KEY_l
+                                    | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
+                                    | keysyms::KEY_plus | keysyms::KEY_equal
+                                    | keysyms::KEY_minus => {
+                                        if key_state == KeyState::Pressed {
+                                            let action = match sym.raw() {
+                                                keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                                keysyms::KEY_q => KeyAction::CloseWindow,
+                                                keysyms::KEY_Q => KeyAction::Quit,
+                                                keysyms::KEY_j => KeyAction::FocusNext,
+                                                keysyms::KEY_k => KeyAction::FocusPrev,
+                                                keysyms::KEY_space => KeyAction::SwapMaster,
+                                                keysyms::KEY_h => KeyAction::MasterShrink,
+                                                keysyms::KEY_l => KeyAction::MasterGrow,
+                                                keysyms::KEY_f => KeyAction::ToggleFullscreen,
+                                                keysyms::KEY_v => KeyAction::ToggleFloat,
+                                                keysyms::KEY_m => KeyAction::ToggleMonocle,
+                                                keysyms::KEY_plus | keysyms::KEY_equal => {
+                                                    KeyAction::ResolutionUp
+                                                }
+                                                keysyms::KEY_minus => KeyAction::ResolutionDown,
+                                                _ => unreachable!(),
+                                            };
+                                            return FilterResult::Intercept(Some(action));
+                                        } else {
+                                            return FilterResult::Intercept(None);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // Check plugin-registered keybindings
+                            for (ks, alt, ctrl, shift, logo, ref cb_id) in &plugin_bindings {
+                                if sym.raw() == *ks
+                                    && modifiers.alt == *alt
+                                    && modifiers.ctrl == *ctrl
+                                    && modifiers.shift == *shift
+                                    && modifiers.logo == *logo
+                                {
+                                    if key_state == KeyState::Pressed {
+                                        return FilterResult::Intercept(Some(
+                                            KeyAction::PluginCallback(cb_id.clone()),
+                                        ));
+                                    } else {
+                                        return FilterResult::Intercept(None);
+                                    }
+                                }
+                            }
+                            FilterResult::Forward
+                        },
+                    );
+                    if let Some(Some(action)) = action {
+                        match action {
+                            KeyAction::LaunchTerminal => {
+                                info!("keybinding: launch terminal");
+                                if let Err(e) = std::process::Command::new("foot").spawn() {
+                                    info!(error = %e, "failed to launch foot");
+                                }
+                            }
+                            KeyAction::CloseWindow => {
+                                info!("keybinding: close window");
+                                state.close_focused_window();
+                            }
+                            KeyAction::FocusNext => state.focus_next(),
+                            KeyAction::FocusPrev => state.focus_prev(),
+                            KeyAction::SwapMaster => state.swap_master(),
+                            KeyAction::MasterGrow | KeyAction::MasterShrink => {
+                                let changed = if matches!(action, KeyAction::MasterGrow) {
+                                    state.layout.grow_master()
+                                } else {
+                                    state.layout.shrink_master()
+                                };
+                                if changed {
+                                    let output = state.space.outputs().next().cloned();
+                                    if let Some(output) = output {
+                                        state.retile(&output);
+                                    }
+                                }
+                            }
+                            KeyAction::ToggleFullscreen => { state.toggle_fullscreen(); }
+                            KeyAction::ToggleFloat => { state.toggle_float(); }
+                            KeyAction::ToggleMonocle => {
+                                let current = state.layout.name();
+                                let new_layout = if current == "monocle" { "column" } else { "monocle" };
+                                state.set_layout(new_layout);
+                                let output = state.space.outputs().next().cloned();
+                                if let Some(output) = output {
+                                    state.retile(&output);
+                                }
+                                state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
+                                    name: new_layout.to_string(),
+                                });
+                            }
+                            KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
+                                let dir = if matches!(action, KeyAction::ResolutionUp) { 1 } else { -1 };
+                                if let Some(mode) = output_for_rdp.current_mode() {
+                                    let (new_w, new_h) = next_resolution(
+                                        mode.size.w as u16,
+                                        mode.size.h as u16,
+                                        dir,
+                                    );
+                                    *pending_resize_rdp.lock().unwrap() = Some((new_w, new_h));
+                                }
+                            }
+                            KeyAction::PluginCallback(ref callback_id) => {
+                                info!(callback = %callback_id, "plugin keybinding");
+                                if let Some(ref mut runtime) = state.plugin_runtime {
+                                    runtime.invoke_callback(callback_id);
+                                }
+                                state.execute_plugin_actions();
+                            }
+                            KeyAction::SwitchWorkspace(n) => state.switch_workspace(n),
+                            KeyAction::MoveToWorkspace(n) => state.move_to_workspace(n),
+                            KeyAction::Quit => {
+                                info!("keybinding: quit");
+                                state.loop_signal.stop();
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("failed to insert RDP input source: {e}"))?;
+
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let output_for_render = output.clone();
     let mut current_width = width;
@@ -940,6 +1273,21 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                             // Tell VNC to resize its framebuffer
                             let _ = vnc_resize_tx.try_send((new_w, new_h));
 
+                            // Update RDP dimensions and send resize event
+                            rdp_width_render.store(new_w, std::sync::atomic::Ordering::Relaxed);
+                            rdp_height_render.store(new_h, std::sync::atomic::Ordering::Relaxed);
+                            // Send a resize display update to connected RDP clients
+                            if let Ok(guard) = rdp_update_tx_render.try_lock() {
+                                if let Some(ref tx) = *guard {
+                                    let _ = tx.try_send(ironrdp_server::DisplayUpdate::Resize(
+                                        ironrdp_server::DesktopSize {
+                                            width: new_w,
+                                            height: new_h,
+                                        },
+                                    ));
+                                }
+                            }
+
                             info!(
                                 width = new_w,
                                 height = new_h,
@@ -977,7 +1325,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
                     );
                     if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
                         if let Ok(pixels) = renderer.map_texture(&mapping) {
-                            let _ = pixel_tx.try_send(pixels.to_vec());
+                            let frame = pixels.to_vec();
+                            let _ = pixel_tx.try_send(frame.clone());
+                            let _ = rdp_pixel_tx.try_send(frame);
                         }
                     }
                 }
@@ -1001,7 +1351,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16) -> anyhow::Result<()> {
 
     info!(
         vnc_port,
-        "entering event loop (headless) -- VNC on :{vnc_port}, launch clients with WAYLAND_DISPLAY={socket_name}"
+        "entering event loop (headless) -- VNC on :{vnc_port}, RDP on :{rdp_port}, launch clients with WAYLAND_DISPLAY={socket_name}"
     );
 
     event_loop
@@ -1622,6 +1972,156 @@ fn xkeysym_to_xkb_keycode(keysym: u32) -> Option<u32> {
         keysyms::KEY_Insert => 110,
         keysyms::KEY_Delete => 111,
         _ => return None,
+    };
+    // XKB keycodes are evdev keycodes + 8
+    Some(evdev + 8)
+}
+
+// --- RDP Server Integration ---
+
+/// RDP display handler — provides desktop size and display update stream to ironrdp-server.
+struct DinatorRdpDisplay {
+    width: Arc<std::sync::atomic::AtomicU16>,
+    height: Arc<std::sync::atomic::AtomicU16>,
+    update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>>,
+}
+
+struct DinatorRdpDisplayUpdates {
+    rx: tokio::sync::mpsc::Receiver<ironrdp_server::DisplayUpdate>,
+}
+
+#[async_trait::async_trait]
+impl ironrdp_server::RdpServerDisplayUpdates for DinatorRdpDisplayUpdates {
+    async fn next_update(&mut self) -> anyhow::Result<Option<ironrdp_server::DisplayUpdate>> {
+        Ok(self.rx.recv().await)
+    }
+}
+
+#[async_trait::async_trait]
+impl ironrdp_server::RdpServerDisplay for DinatorRdpDisplay {
+    async fn size(&mut self) -> ironrdp_server::DesktopSize {
+        ironrdp_server::DesktopSize {
+            width: self.width.load(std::sync::atomic::Ordering::Relaxed),
+            height: self.height.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    async fn updates(&mut self) -> anyhow::Result<Box<dyn ironrdp_server::RdpServerDisplayUpdates>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        *self.update_tx.lock().await = Some(tx);
+        Ok(Box::new(DinatorRdpDisplayUpdates { rx }))
+    }
+}
+
+/// RDP input handler — receives keyboard/mouse events from RDP clients
+/// and forwards them to the compositor event loop via calloop channel.
+struct DinatorRdpInputHandler {
+    tx: calloop::channel::Sender<RdpInputEvent>,
+}
+
+impl ironrdp_server::RdpServerInputHandler for DinatorRdpInputHandler {
+    fn keyboard(&mut self, event: ironrdp_server::KeyboardEvent) {
+        match event {
+            ironrdp_server::KeyboardEvent::Pressed { code, extended } => {
+                if let Some(keycode) = rdp_scancode_to_xkb(code, extended) {
+                    let _ = self.tx.send(RdpInputEvent::Key {
+                        keycode,
+                        pressed: true,
+                    });
+                }
+            }
+            ironrdp_server::KeyboardEvent::Released { code, extended } => {
+                if let Some(keycode) = rdp_scancode_to_xkb(code, extended) {
+                    let _ = self.tx.send(RdpInputEvent::Key {
+                        keycode,
+                        pressed: false,
+                    });
+                }
+            }
+            _ => {} // Unicode and Synchronize events not handled yet
+        }
+    }
+
+    fn mouse(&mut self, event: ironrdp_server::MouseEvent) {
+        match event {
+            ironrdp_server::MouseEvent::Move { x, y } => {
+                let _ = self.tx.send(RdpInputEvent::MouseMove { x, y });
+            }
+            ironrdp_server::MouseEvent::LeftPressed => {
+                let _ = self.tx.send(RdpInputEvent::MouseButton {
+                    button: 0x110, // BTN_LEFT
+                    pressed: true,
+                });
+            }
+            ironrdp_server::MouseEvent::LeftReleased => {
+                let _ = self.tx.send(RdpInputEvent::MouseButton {
+                    button: 0x110,
+                    pressed: false,
+                });
+            }
+            ironrdp_server::MouseEvent::RightPressed => {
+                let _ = self.tx.send(RdpInputEvent::MouseButton {
+                    button: 0x111, // BTN_RIGHT
+                    pressed: true,
+                });
+            }
+            ironrdp_server::MouseEvent::RightReleased => {
+                let _ = self.tx.send(RdpInputEvent::MouseButton {
+                    button: 0x111,
+                    pressed: false,
+                });
+            }
+            ironrdp_server::MouseEvent::MiddlePressed => {
+                let _ = self.tx.send(RdpInputEvent::MouseButton {
+                    button: 0x112, // BTN_MIDDLE
+                    pressed: true,
+                });
+            }
+            ironrdp_server::MouseEvent::MiddleReleased => {
+                let _ = self.tx.send(RdpInputEvent::MouseButton {
+                    button: 0x112,
+                    pressed: false,
+                });
+            }
+            ironrdp_server::MouseEvent::VerticalScroll { value } => {
+                let _ = self.tx.send(RdpInputEvent::MouseScroll { value });
+            }
+            _ => {} // Button4/5 and RelMove not handled yet
+        }
+    }
+}
+
+/// Convert an RDP scan code (Windows/XT Set 1) to an XKB keycode (evdev + 8).
+///
+/// RDP keyboard events provide a scan code byte and an `extended` flag.
+/// Non-extended scan codes map 1:1 to evdev keycodes.
+/// Extended scan codes (0xE0 prefix keys) need a lookup table.
+fn rdp_scancode_to_xkb(code: u8, extended: bool) -> Option<u32> {
+    let evdev = if extended {
+        match code {
+            0x1C => 96,  // KP Enter
+            0x1D => 97,  // Right Ctrl
+            0x35 => 98,  // KP /
+            0x37 => 99,  // Print Screen / SysRq
+            0x38 => 100, // Right Alt
+            0x46 => 119, // Pause
+            0x47 => 102, // Home
+            0x48 => 103, // Up
+            0x49 => 104, // Page Up
+            0x4B => 105, // Left
+            0x4D => 106, // Right
+            0x4F => 107, // End
+            0x50 => 108, // Down
+            0x51 => 109, // Page Down
+            0x52 => 110, // Insert
+            0x53 => 111, // Delete
+            0x5B => 125, // Left Super / Win
+            0x5C => 126, // Right Super / Win
+            0x5D => 127, // Menu / Compose
+            _ => return None,
+        }
+    } else {
+        code as u32
     };
     // XKB keycodes are evdev keycodes + 8
     Some(evdev + 8)

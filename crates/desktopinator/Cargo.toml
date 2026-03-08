@@ -18,3 +18,6 @@ tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 rustvncserver = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"] }
+ironrdp-server = { version = "0.10", default-features = true, features = ["helper"] }
+async-trait = "0.1"
+bytes = "1"
