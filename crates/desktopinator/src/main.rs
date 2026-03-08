@@ -11,6 +11,7 @@ use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer};
+use smithay::desktop::layer_map_for_output;
 use smithay::desktop::space::SpaceRenderElements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::wayland::compositor;
@@ -362,6 +363,16 @@ fn run_winit() -> anyhow::Result<()> {
                         Some(output.clone())
                     });
                 });
+
+                // Send frame callbacks to layer surfaces
+                {
+                    let layer_map = layer_map_for_output(&output);
+                    for layer in layer_map.layers() {
+                        layer.send_frame(&output, state.start_time.elapsed(), None, |_, _| {
+                            Some(output.clone())
+                        });
+                    }
+                }
 
                 state.space.refresh();
                 backend.window().request_redraw();
@@ -1400,6 +1411,16 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16) -> anyhow
                     Some(output.clone())
                 });
             });
+
+            // Send frame callbacks to layer surfaces
+            {
+                let layer_map = layer_map_for_output(output);
+                for layer in layer_map.layers() {
+                    layer.send_frame(output, state.start_time.elapsed(), None, |_, _| {
+                        Some(output.clone())
+                    });
+                }
+            }
 
             state.space.refresh();
 

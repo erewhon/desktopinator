@@ -2,7 +2,8 @@ use smithay::backend::input::{
     Axis, ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
     PointerButtonEvent, PointerMotionAbsoluteEvent,
 };
-use smithay::desktop::WindowSurfaceType;
+use smithay::desktop::{WindowSurfaceType, layer_map_for_output};
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use smithay::input::keyboard::keysyms;
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
@@ -173,20 +174,45 @@ impl DinatorState {
 
         let Some(pointer) = self.seat.get_pointer() else { return };
 
-        let under = self.space.element_under(pos);
-        let surface_under = under.and_then(|(window, loc)| {
-            let rel = (pos.x - loc.x as f64, pos.y - loc.y as f64);
-            window.surface_under(rel, WindowSurfaceType::ALL)
-                .map(|(s, offset)| {
-                    (
-                        s,
-                        smithay::utils::Point::<f64, smithay::utils::Logical>::from((
-                            loc.x as f64 + offset.x as f64,
-                            loc.y as f64 + offset.y as f64,
-                        )),
-                    )
-                })
-        });
+        // Check layer surfaces first (Overlay and Top layers take priority)
+        let layer_map = layer_map_for_output(&output);
+        let mut surface_under = None;
+        for layer in [WlrLayer::Overlay, WlrLayer::Top] {
+            if let Some(layer_surface) = layer_map.layer_under(layer, pos) {
+                if let Some(geo) = layer_map.layer_geometry(layer_surface) {
+                    let rel = (pos.x - geo.loc.x as f64, pos.y - geo.loc.y as f64);
+                    if let Some((s, offset)) = layer_surface.surface_under(rel, WindowSurfaceType::ALL) {
+                        surface_under = Some((
+                            s,
+                            smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                                geo.loc.x as f64 + offset.x as f64,
+                                geo.loc.y as f64 + offset.y as f64,
+                            )),
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+        drop(layer_map);
+
+        // Fall back to space windows
+        if surface_under.is_none() {
+            let under = self.space.element_under(pos);
+            surface_under = under.and_then(|(window, loc)| {
+                let rel = (pos.x - loc.x as f64, pos.y - loc.y as f64);
+                window.surface_under(rel, WindowSurfaceType::ALL)
+                    .map(|(s, offset)| {
+                        (
+                            s,
+                            smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                                loc.x as f64 + offset.x as f64,
+                                loc.y as f64 + offset.y as f64,
+                            )),
+                        )
+                    })
+            });
+        }
 
         pointer.motion(
             self,

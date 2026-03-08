@@ -7,7 +7,7 @@ use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
-use smithay::desktop::Window;
+use smithay::desktop::{Window, WindowSurfaceType, layer_map_for_output};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
@@ -55,6 +55,35 @@ impl CompositorHandler for DinatorState {
 
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
+
+        // Handle layer surface commits
+        let output = self.space.outputs().next().cloned();
+        if let Some(output) = output {
+            let mut layer_map = layer_map_for_output(&output);
+            let layer = layer_map
+                .layer_for_surface(surface, WindowSurfaceType::ALL)
+                .cloned();
+            if let Some(layer) = layer {
+                layer_map.arrange();
+                drop(layer_map);
+
+                // Give keyboard focus to layer surfaces with exclusive interactivity
+                let keyboard_interactivity = compositor::with_states(surface, |states| {
+                    states
+                        .cached_state
+                        .get::<LayerSurfaceCachedState>()
+                        .current()
+                        .keyboard_interactivity
+                });
+                if keyboard_interactivity == KeyboardInteractivity::Exclusive {
+                    let keyboard = self.seat.get_keyboard().unwrap();
+                    let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                    keyboard.set_focus(self, Some(layer.wl_surface().clone()), serial);
+                }
+                return;
+            }
+            drop(layer_map);
+        }
 
         let found = self
             .space
@@ -493,6 +522,78 @@ impl XdgForeignHandler for DinatorState {
 }
 
 smithay::delegate_xdg_foreign!(DinatorState);
+
+// --- Layer Shell ---
+
+use smithay::delegate_layer_shell;
+// desktop::layer_map_for_output already imported at top
+use smithay::desktop::LayerSurface as DesktopLayerSurface;
+use smithay::wayland::shell::wlr_layer::{
+    KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState,
+    LayerSurfaceConfigure, WlrLayerShellHandler, WlrLayerShellState,
+};
+
+impl WlrLayerShellHandler for DinatorState {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    fn new_layer_surface(
+        &mut self,
+        surface: WlrLayerSurface,
+        output: Option<WlOutput>,
+        _layer: Layer,
+        namespace: String,
+    ) {
+        let output = output
+            .as_ref()
+            .and_then(|o| Output::from_resource(o))
+            .or_else(|| self.space.outputs().next().cloned());
+
+        let desktop_surface = DesktopLayerSurface::new(surface, namespace);
+
+        if let Some(ref output) = output {
+            let mut layer_map = layer_map_for_output(output);
+            layer_map.map_layer(&desktop_surface).ok();
+        }
+    }
+
+    fn ack_configure(
+        &mut self,
+        _surface: WlSurface,
+        _configure: LayerSurfaceConfigure,
+    ) {
+    }
+
+    fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        let output = self.space.outputs().next().cloned();
+        if let Some(output) = output {
+            let mut layer_map = layer_map_for_output(&output);
+            // Find the desktop layer surface that wraps this wlr surface
+            let wl_surface = surface.wl_surface().clone();
+            let layers: Vec<DesktopLayerSurface> = layer_map
+                .layers()
+                .filter(|l| l.wl_surface() == &wl_surface)
+                .cloned()
+                .collect();
+            for l in layers {
+                layer_map.unmap_layer(&l);
+            }
+            drop(layer_map);
+        }
+
+        // Restore keyboard focus to the focused window (if any)
+        if let Some(window) = self.focused_window().cloned() {
+            if let Some(toplevel) = window.toplevel() {
+                let keyboard = self.seat.get_keyboard().unwrap();
+                let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
+            }
+        }
+    }
+}
+
+delegate_layer_shell!(DinatorState);
 
 // --- Output ---
 

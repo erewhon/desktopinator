@@ -23,6 +23,7 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::wayland::xdg_foreign::XdgForeignState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
 
 use tracing::info;
@@ -123,6 +124,7 @@ pub struct DinatorState {
     pub relative_pointer_state: RelativePointerManagerState,
     pub content_type_state: ContentTypeState,
     pub xdg_foreign_state: XdgForeignState,
+    pub layer_shell_state: WlrLayerShellState,
     pub seat_state: SeatState<Self>,
     pub seat: Seat<Self>,
 
@@ -179,6 +181,7 @@ impl DinatorState {
         let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
         let content_type_state = ContentTypeState::new::<Self>(&display_handle);
         let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "desktopinator");
 
@@ -202,6 +205,7 @@ impl DinatorState {
             relative_pointer_state,
             content_type_state,
             xdg_foreign_state,
+            layer_shell_state,
             seat_state,
             seat,
             space,
