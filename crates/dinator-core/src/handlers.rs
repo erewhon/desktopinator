@@ -264,14 +264,10 @@ impl XdgShellHandler for DinatorState {
             // Focus the last window in the order, if any remain
             if let Some(&next_id) = self.window_order.last() {
                 if let Some(window) = self.window_map.get(&next_id) {
-                    if let Some(toplevel) = window.toplevel() {
+                    if let Some(surface) = Self::window_wl_surface(window) {
                         let serial = SERIAL_COUNTER.next_serial();
                         if let Some(keyboard) = self.seat.get_keyboard() {
-                            keyboard.set_focus(
-                                self,
-                                Some(toplevel.wl_surface().clone()),
-                                serial,
-                            );
+                            keyboard.set_focus(self, Some(surface), serial);
                         }
                     }
                 }
@@ -694,10 +690,10 @@ impl WlrLayerShellHandler for DinatorState {
 
         // Restore keyboard focus to the focused window (if any)
         if let Some(window) = self.focused_window().cloned() {
-            if let Some(toplevel) = window.toplevel() {
+            if let Some(surface) = Self::window_wl_surface(&window) {
                 let keyboard = self.seat.get_keyboard().unwrap();
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
+                keyboard.set_focus(self, Some(surface), serial);
             }
         }
     }

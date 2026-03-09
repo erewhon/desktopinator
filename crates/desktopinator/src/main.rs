@@ -335,6 +335,11 @@ fn run_winit() -> anyhow::Result<()> {
         })
         .map_err(|e| anyhow::anyhow!("failed to insert IPC source: {e}"))?;
 
+    // Spawn XWayland
+    if let Err(e) = spawn_xwayland(&event_loop.handle(), &display_handle) {
+        tracing::warn!(error = %e, "XWayland not available — X11 apps won't work");
+    }
+
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let mut last_output_size = backend.window_size();
 
@@ -819,6 +824,11 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
             (request.respond)(response);
         })
         .map_err(|e| anyhow::anyhow!("failed to insert IPC source: {e}"))?;
+
+    // Spawn XWayland
+    if let Err(e) = spawn_xwayland(&event_loop.handle(), &display_handle) {
+        tracing::warn!(error = %e, "XWayland not available — X11 apps won't work");
+    }
 
     // Handle VNC input events in the compositor event loop
     let output_for_input = output.clone();
@@ -1789,6 +1799,61 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
 
     info!("shutting down");
     cleanup_and_exit(0)
+}
+
+/// Spawn XWayland and register it with the event loop.
+fn spawn_xwayland(
+    handle: &calloop::LoopHandle<'static, DinatorState>,
+    display_handle: &smithay::reexports::wayland_server::DisplayHandle,
+) -> anyhow::Result<()> {
+    use std::process::Stdio;
+    use smithay::xwayland::{X11Wm, XWayland, XWaylandEvent};
+
+    let env_vars: Vec<(String, String)> = vec![];
+    let (xwayland, xwayland_client) = XWayland::spawn(
+        display_handle,
+        None::<u32>,   // auto-pick display number
+        env_vars,      // no extra env vars
+        true,          // open abstract socket
+        Stdio::piped(),  // stdout
+        Stdio::piped(),  // stderr
+        |_| {},          // user_data
+    )
+    .context("failed to spawn XWayland")?;
+
+    let xwl_client = xwayland_client.clone();
+    let loop_handle = handle.clone();
+    handle
+        .insert_source(xwayland, move |event, _, state| match event {
+            XWaylandEvent::Ready {
+                x11_socket,
+                display_number,
+            } => {
+                info!(display = display_number, "XWayland ready");
+                std::env::set_var("DISPLAY", format!(":{display_number}"));
+
+                match X11Wm::start_wm(
+                    loop_handle.clone(),
+                    x11_socket,
+                    xwl_client.clone(),
+                ) {
+                    Ok(wm) => {
+                        state.x11_wm = Some(wm);
+                        info!("X11 window manager started");
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to start X11 window manager");
+                    }
+                }
+            }
+            XWaylandEvent::Error => {
+                tracing::error!("XWayland startup error");
+            }
+        })
+        .map_err(|e| anyhow::anyhow!("failed to insert XWayland source: {e}"))?;
+
+    info!("XWayland spawned");
+    Ok(())
 }
 
 /// Clean up resources and exit the process.

@@ -25,6 +25,8 @@ use smithay::wayland::xdg_foreign::XdgForeignState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
+use smithay::wayland::xwayland_shell::XWaylandShellState;
+use smithay::xwayland::X11Wm;
 
 use tracing::info;
 
@@ -168,6 +170,12 @@ pub struct DinatorState {
     pub on_clipboard_change: Option<Box<dyn Fn(String)>>,
     /// Text from RDP client clipboard, available for Wayland apps to paste.
     pub rdp_clipboard_text: Option<String>,
+
+    // XWayland
+    pub xwayland_shell_state: XWaylandShellState,
+    pub x11_wm: Option<X11Wm>,
+    /// Map X11 surfaces to window IDs for tiling integration.
+    pub x11_surface_to_id: HashMap<u32, WindowId>,
 }
 
 impl DinatorState {
@@ -188,6 +196,7 @@ impl DinatorState {
         let content_type_state = ContentTypeState::new::<Self>(&display_handle);
         let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
+        let xwayland_shell_state = XWaylandShellState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let seat = seat_state.new_wl_seat(&display_handle, "desktopinator");
 
@@ -233,11 +242,25 @@ impl DinatorState {
             workspace_focus: HashMap::new(),
             on_clipboard_change: None,
             rdp_clipboard_text: None,
+            xwayland_shell_state,
+            x11_wm: None,
+            x11_surface_to_id: HashMap::new(),
         }
     }
 
     pub fn next_window_id() -> WindowId {
         WindowId(NEXT_WINDOW_ID.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Get the WlSurface for a Window, whether it's Wayland or X11.
+    pub fn window_wl_surface(window: &Window) -> Option<WlSurface> {
+        if let Some(toplevel) = window.toplevel() {
+            Some(toplevel.wl_surface().clone())
+        } else if let Some(x11) = window.x11_surface() {
+            x11.wl_surface().clone()
+        } else {
+            None
+        }
     }
 
     /// Broadcast an IPC event to all subscribed clients.
@@ -404,14 +427,10 @@ impl DinatorState {
             if let Some(window) = self.window_map.get(&id) {
                 let window = window.clone();
                 self.space.raise_element(&window, true);
-                if let Some(toplevel) = window.toplevel() {
+                if let Some(surface) = Self::window_wl_surface(&window) {
                     if let Some(keyboard) = self.seat.get_keyboard() {
                         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                        keyboard.set_focus(
-                            self,
-                            Some(toplevel.wl_surface().clone()),
-                            serial,
-                        );
+                        keyboard.set_focus(self, Some(surface), serial);
                     }
                 }
             }
@@ -458,13 +477,9 @@ impl DinatorState {
         // Focus next window on current workspace
         if let Some(&next_id) = self.window_order.last() {
             if let Some(window) = self.window_map.get(&next_id) {
-                if let Some(toplevel) = window.toplevel() {
+                if let Some(surface) = Self::window_wl_surface(window) {
                     let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                    keyboard.set_focus(
-                        self,
-                        Some(toplevel.wl_surface().clone()),
-                        serial,
-                    );
+                    keyboard.set_focus(self, Some(surface), serial);
                 }
             }
         } else {
@@ -514,6 +529,12 @@ impl DinatorState {
                         state.states.unset(xdg_toplevel::State::Fullscreen);
                     });
                     toplevel.send_pending_configure();
+                } else if let Some(x11) = window.x11_surface() {
+                    let rect = smithay::utils::Rectangle::new(
+                        (placement.rect.x, placement.rect.y).into(),
+                        (placement.rect.width, placement.rect.height).into(),
+                    );
+                    let _ = x11.configure(Some(rect));
                 }
             }
         }
@@ -528,6 +549,13 @@ impl DinatorState {
                         state.states.set(xdg_toplevel::State::Fullscreen);
                     });
                     toplevel.send_pending_configure();
+                } else if let Some(x11) = window.x11_surface() {
+                    let rect = smithay::utils::Rectangle::new(
+                        (geo.loc.x, geo.loc.y).into(),
+                        (geo.size.w, geo.size.h).into(),
+                    );
+                    let _ = x11.configure(Some(rect));
+                    let _ = x11.set_fullscreen(true);
                 }
                 // Raise fullscreen windows above tiled ones
                 self.space.raise_element(window, false);
@@ -620,6 +648,12 @@ impl DinatorState {
                             state.states.unset(xdg_toplevel::State::Fullscreen);
                         });
                         toplevel.send_pending_configure();
+                    } else if let Some(x11) = window.x11_surface() {
+                        let rect = smithay::utils::Rectangle::new(
+                            (x, y).into(),
+                            (w, h).into(),
+                        );
+                        let _ = x11.configure(Some(rect));
                     }
                 }
                 // Retile remaining tiled windows
@@ -671,6 +705,8 @@ impl DinatorState {
                 if let Some(window) = self.window_map.get(id) {
                     if let Some(toplevel) = window.toplevel() {
                         toplevel.send_close();
+                    } else if let Some(x11) = window.x11_surface() {
+                        let _ = x11.close();
                     }
                 }
             }
@@ -733,9 +769,9 @@ impl DinatorState {
         if let Some(window) = self.window_map.get(&next_id) {
             let window = window.clone();
             self.space.raise_element(&window, true);
-            if let Some(toplevel) = window.toplevel() {
+            if let Some(surface) = Self::window_wl_surface(&window) {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
-                keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
+                keyboard.set_focus(self, Some(surface), serial);
                 info!(idx = next_idx, "focus cycled");
             }
         }

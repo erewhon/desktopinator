@@ -20,6 +20,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "renderer_gl",
     "desktop",
     "wayland_frontend",
+    "xwayland",
 ] }
 calloop = { version = "0.14", features = ["executor"] }
 tracing = "0.1"
