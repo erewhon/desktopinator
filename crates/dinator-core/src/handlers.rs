@@ -50,7 +50,14 @@ impl CompositorHandler for DinatorState {
         &self,
         client: &'a smithay::reexports::wayland_server::Client,
     ) -> &'a CompositorClientState {
-        &client.get_data::<ClientState>().unwrap().compositor_state
+        if let Some(state) = client.get_data::<ClientState>() {
+            return &state.compositor_state;
+        }
+        // XWayland client uses XWaylandClientData instead of ClientState
+        if let Some(state) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &state.compositor_state;
+        }
+        panic!("client has no compositor state");
     }
 
     fn commit(&mut self, surface: &WlSurface) {
