@@ -162,6 +162,12 @@ pub struct DinatorState {
     pub window_workspace: HashMap<WindowId, usize>,
     pub workspace_order: HashMap<usize, Vec<WindowId>>,
     pub workspace_focus: HashMap<usize, Option<WindowId>>,
+
+    // Clipboard sync (RDP ↔ Wayland)
+    /// Called when a Wayland client sets the clipboard. Receives UTF-8 text.
+    pub on_clipboard_change: Option<Box<dyn Fn(String)>>,
+    /// Text from RDP client clipboard, available for Wayland apps to paste.
+    pub rdp_clipboard_text: Option<String>,
 }
 
 impl DinatorState {
@@ -225,6 +231,8 @@ impl DinatorState {
             window_workspace: HashMap::new(),
             workspace_order: HashMap::new(),
             workspace_focus: HashMap::new(),
+            on_clipboard_change: None,
+            rdp_clipboard_text: None,
         }
     }
 

@@ -25,9 +25,9 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::wayland::selection::data_device::{
-    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+    self, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use tracing::info;
@@ -379,6 +379,99 @@ smithay::delegate_xdg_decoration!(DinatorState);
 
 impl SelectionHandler for DinatorState {
     type SelectionUserData = ();
+
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        seat: Seat<Self>,
+    ) {
+        if ty != SelectionTarget::Clipboard {
+            return;
+        }
+
+        if let Some(source) = source {
+            // Check for text mime types
+            let mime_types = source.mime_types();
+            let text_mime = mime_types
+                .iter()
+                .find(|m| {
+                    m.starts_with("text/plain")
+                        || m.starts_with("text/utf8")
+                        || m.starts_with("UTF8_STRING")
+                        || m.starts_with("STRING")
+                })
+                .cloned();
+
+            if let Some(mime) = text_mime {
+                // Read the clipboard text via request_data_device_client_selection
+                use std::io::Read;
+                use std::os::unix::io::FromRawFd;
+
+                match std::os::unix::net::UnixStream::pair() {
+                    Ok((read_end, write_end)) => {
+                        let write_fd = unsafe {
+                            std::os::unix::io::OwnedFd::from_raw_fd(
+                                std::os::unix::io::IntoRawFd::into_raw_fd(write_end),
+                            )
+                        };
+                        // Use the public API to request selection data
+                        let _ = data_device::request_data_device_client_selection::<Self>(
+                            &seat,
+                            mime.clone(),
+                            write_fd,
+                        );
+
+                        // Read from our end
+                        let mut read_stream = read_end;
+                        let _ = read_stream
+                            .set_read_timeout(Some(std::time::Duration::from_millis(100)));
+                        let mut buf = Vec::new();
+                        let _ = read_stream.read_to_end(&mut buf);
+
+                        if !buf.is_empty() {
+                            let text = String::from_utf8_lossy(&buf).to_string();
+                            tracing::info!(
+                                text_len = text.len(),
+                                "clipboard: Wayland app copied text"
+                            );
+                            if let Some(ref callback) = self.on_clipboard_change {
+                                callback(text);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "clipboard: failed to create socket pair");
+                    }
+                }
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        ty: SelectionTarget,
+        mime_type: String,
+        fd: OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &Self::SelectionUserData,
+    ) {
+        if ty != SelectionTarget::Clipboard {
+            return;
+        }
+
+        // Serve RDP clipboard text to Wayland apps
+        if let Some(ref text) = self.rdp_clipboard_text {
+            if mime_type.starts_with("text/plain") || mime_type == "UTF8_STRING" || mime_type == "STRING" {
+                use std::io::Write;
+                let mut file = std::fs::File::from(fd);
+                if let Err(e) = file.write_all(text.as_bytes()) {
+                    tracing::warn!(error = %e, "clipboard: failed to write to fd");
+                }
+                tracing::debug!(text_len = text.len(), "clipboard: served RDP text to Wayland app");
+            }
+        }
+    }
 }
 
 impl DataDeviceHandler for DinatorState {

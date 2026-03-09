@@ -4,8 +4,10 @@ set -euo pipefail
 # Use linuxbrew FFmpeg for hardware encoding support (ffmpeg-next 8.0 needs FFmpeg 8+)
 BREW_FFMPEG="$(brew --prefix ffmpeg 2>/dev/null || true)"
 if [ -n "$BREW_FFMPEG" ] && [ -d "$BREW_FFMPEG/lib/pkgconfig" ]; then
-    export PKG_CONFIG_PATH="$BREW_FFMPEG/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export PKG_CONFIG_PATH="$BREW_FFMPEG/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
     export LD_LIBRARY_PATH="$BREW_FFMPEG/lib:${LD_LIBRARY_PATH:-}"
+else
+    export PKG_CONFIG_PATH="/usr/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
 
 # Build first

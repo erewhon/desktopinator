@@ -22,8 +22,11 @@ ironrdp-server = { version = "0.10", default-features = true, features = ["helpe
 ironrdp-pdu = "0.7"
 ironrdp-dvc = "0.5"
 ironrdp-core = "0.1"
+ironrdp-cliprdr = "0.5"
 ironrdp-displaycontrol = "0.5"
 async-trait = "0.1"
 bytes = "1"
 rcgen = "0.14"
 dinator-encode = { path = "../dinator-encode", features = ["ffmpeg"] }
+ironrdp-rdpsnd = "0.7"
+pipewire = { version = "0.9", features = ["v0_3_33"] }

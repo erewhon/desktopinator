@@ -1,3 +1,5 @@
+mod audio;
+mod clipboard;
 mod gfx;
 mod ipc;
 
@@ -579,6 +581,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let rdp_update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>> =
         Arc::new(tokio::sync::Mutex::new(None));
 
+    // Clipboard shared state for CLIPRDR
+    let clipboard_state = Arc::new(std::sync::Mutex::new(clipboard::ClipboardState::default()));
+    let clipboard_state_render = clipboard_state.clone();
+
     // GFX shared state for H.264 over RDP
     let gfx_state = Arc::new(std::sync::Mutex::new(gfx::GfxSharedState::new(
         width, height,
@@ -589,6 +595,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let rdp_event_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<ironrdp_server::ServerEvent>>>> =
         Arc::new(std::sync::Mutex::new(None));
     let rdp_event_tx_render = rdp_event_tx.clone();
+    let rdp_event_tx_clipboard = rdp_event_tx.clone();
     let rdp_update_tx_adapter = rdp_update_tx.clone();
     let rdp_width = Arc::new(std::sync::atomic::AtomicU16::new(width));
     let rdp_height = Arc::new(std::sync::atomic::AtomicU16::new(height));
@@ -645,11 +652,15 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     return;
                 }
             };
+            let cliprdr_factory = clipboard::DinatorCliprdrFactory::new(clipboard_state.clone());
+            let sound_factory = audio::DinatorSoundFactory::new();
             let mut server = ironrdp_server::RdpServer::builder()
                 .with_addr(([0, 0, 0, 0], rdp_port))
                 .with_tls(tls_acceptor)
                 .with_input_handler(input_handler)
                 .with_display_handler(display)
+                .with_cliprdr_factory(Some(Box::new(cliprdr_factory)))
+                .with_sound_factory(Some(Box::new(sound_factory)))
                 .build();
 
             // Register GFX DVC channel for H.264 streaming — creates a new handler per connection
@@ -734,6 +745,30 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
         .into_iter()
         .map(|kb| (kb.keysym, kb.mods.0, kb.mods.1, kb.mods.2, kb.mods.3, kb.callback_id))
         .collect();
+
+    // Set up clipboard sync callback (Wayland → RDP)
+    {
+        let clipboard_state_cb = clipboard_state_render.clone();
+        let rdp_event_tx_cb = rdp_event_tx_clipboard.clone();
+        state.on_clipboard_change = Some(Box::new(move |text: String| {
+            // Store the text in shared state
+            {
+                let mut cs = clipboard_state_cb.lock().unwrap();
+                cs.wayland_text = Some(text);
+                cs.rdp_owns_clipboard = false;
+            }
+            // Notify RDP client that clipboard changed
+            if let Some(ref tx) = *rdp_event_tx_cb.lock().unwrap() {
+                let formats = vec![ironrdp_cliprdr::pdu::ClipboardFormat {
+                    id: ironrdp_cliprdr::pdu::ClipboardFormatId(13), // CF_UNICODETEXT
+                    name: None,
+                }];
+                let _ = tx.send(ironrdp_server::ServerEvent::Clipboard(
+                    ironrdp_cliprdr::backend::ClipboardMessage::SendInitiateCopy(formats),
+                ));
+            }
+        }));
+    }
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
@@ -1428,6 +1463,30 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
         .handle()
         .insert_source(timer, move |_, _, state| {
             let output = &output_for_render;
+
+            // Check for new RDP clipboard text → set as Wayland clipboard
+            {
+                let mut cs = clipboard_state_render.lock().unwrap();
+                if cs.rdp_owns_clipboard {
+                    if let Some(text) = cs.rdp_text.take() {
+                        cs.rdp_owns_clipboard = false;
+                        state.rdp_clipboard_text = Some(text);
+                        // Set compositor selection so Wayland apps can paste
+                        smithay::wayland::selection::data_device::set_data_device_selection(
+                            &state.display.handle(),
+                            &state.seat,
+                            vec![
+                                "text/plain;charset=utf-8".to_string(),
+                                "text/plain".to_string(),
+                                "UTF8_STRING".to_string(),
+                                "STRING".to_string(),
+                            ],
+                            (),
+                        );
+                        info!("clipboard: set Wayland selection from RDP text");
+                    }
+                }
+            }
 
             // Check for pending resolution change
             if let Some((new_w, new_h)) = pending_resize_render.lock().unwrap().take() {
