@@ -10,6 +10,7 @@ members = [
     "crates/dinator-lua",
     "crates/dinator-wasm",
     "crates/dinatorctl",
+    "crates/dinator-encode",
 ]
 
 [workspace.dependencies]
@@ -29,3 +30,4 @@ serde_json = "1"
 
 [patch.crates-io]
 ironrdp-acceptor = { path = "crates/ironrdp-acceptor-patched" }
+ironrdp-server = { path = "crates/ironrdp-server-patched" }

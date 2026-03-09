@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Use linuxbrew FFmpeg for hardware encoding support (ffmpeg-next 8.0 needs FFmpeg 8+)
+BREW_FFMPEG="$(brew --prefix ffmpeg 2>/dev/null || true)"
+if [ -n "$BREW_FFMPEG" ] && [ -d "$BREW_FFMPEG/lib/pkgconfig" ]; then
+    export PKG_CONFIG_PATH="$BREW_FFMPEG/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+    export LD_LIBRARY_PATH="$BREW_FFMPEG/lib:${LD_LIBRARY_PATH:-}"
+fi
+
 # Build first
 echo ":: building desktopinator"
 cargo build 2>&1
@@ -17,6 +24,9 @@ if [ "${HEADLESS:-}" = "1" ]; then
     [ -n "${VNC_PORT:-}" ] && DINATOR_ARGS+=(--vnc-port "$VNC_PORT")
     [ -n "${RDP_PORT:-}" ] && DINATOR_ARGS+=(--rdp-port "$RDP_PORT")
     [ -n "${RESOLUTION:-}" ] && DINATOR_ARGS+=(--resolution "$RESOLUTION")
+    [ -n "${ENCODER:-}" ] && DINATOR_ARGS+=(--encoder "$ENCODER")
+    [ "${ONE_SHOT:-}" = "1" ] && DINATOR_ARGS+=(--one-shot)
+    [ -n "${FPS:-}" ] && DINATOR_ARGS+=(--fps "$FPS")
 fi
 cargo run --bin desktopinator -- "${DINATOR_ARGS[@]}" 2>&1 | tee "$LOGFILE" &
 COMPOSITOR_PID=$!
