@@ -26,7 +26,7 @@ use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
 use smithay::wayland::shm::ShmState;
 use smithay::wayland::xwayland_shell::XWaylandShellState;
-use smithay::xwayland::X11Wm;
+use smithay::xwayland::{X11Surface, X11Wm};
 
 use tracing::info;
 
@@ -176,6 +176,8 @@ pub struct DinatorState {
     pub x11_wm: Option<X11Wm>,
     /// Map X11 surfaces to window IDs for tiling integration.
     pub x11_surface_to_id: HashMap<u32, WindowId>,
+    /// X11 windows waiting for wl_surface pairing (mapped but no surface yet).
+    pub pending_x11_windows: Vec<X11Surface>,
 }
 
 impl DinatorState {
@@ -245,6 +247,7 @@ impl DinatorState {
             xwayland_shell_state,
             x11_wm: None,
             x11_surface_to_id: HashMap::new(),
+            pending_x11_windows: Vec::new(),
         }
     }
 
