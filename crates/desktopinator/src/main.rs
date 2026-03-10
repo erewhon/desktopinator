@@ -467,7 +467,6 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
     use smithay::utils::{Size, SERIAL_COUNTER};
 
-    use dinator_encode::Encoder as _;
     use rustvncserver::server::ServerEvent;
     use rustvncserver::VncServer;
 
@@ -1424,48 +1423,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let mut composite_buffer: Vec<u8> = vec![0u8; width as usize * height as usize * 4];
     let pending_resize_render = pending_resize.clone();
 
-    // H.264 encoder — selected via --encoder flag
-    let mut h264_encoder: Option<Box<dyn dinator_encode::Encoder>> = None;
-
-    if encoder_pref == "openh264" {
-        // Force openh264 software encoder
-        match dinator_encode::OpenH264Encoder::new(width as u32, height as u32, 2_000_000) {
-            Ok(enc) => {
-                info!(encoder = enc.name(), "H.264 encoder initialized");
-                h264_encoder = Some(Box::new(enc));
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "openh264 encoder failed");
-            }
-        }
-    } else {
-        // Use FFmpeg (auto/vaapi/nvenc/x264)
-        let pref = match encoder_pref {
-            "vaapi" => dinator_encode::FfmpegEncoderPreference::Vaapi,
-            "nvenc" => dinator_encode::FfmpegEncoderPreference::Nvenc,
-            "x264" => dinator_encode::FfmpegEncoderPreference::Software,
-            _ => dinator_encode::FfmpegEncoderPreference::Auto,
-        };
-        match dinator_encode::FfmpegEncoder::new(width as u32, height as u32, 2_000_000, pref) {
-            Ok(enc) => {
-                info!(encoder = enc.name(), "H.264 encoder initialized (FFmpeg)");
-                h264_encoder = Some(Box::new(enc));
-            }
-            Err(e) => {
-                info!(error = %e, "FFmpeg encoder unavailable, trying openh264");
-                // Fall back to openh264
-                match dinator_encode::OpenH264Encoder::new(width as u32, height as u32, 2_000_000) {
-                    Ok(enc) => {
-                        info!(encoder = enc.name(), "H.264 encoder initialized (openh264 fallback)");
-                        h264_encoder = Some(Box::new(enc));
-                    }
-                    Err(e2) => {
-                        tracing::warn!(error = %e2, "no H.264 encoder available, encoding disabled");
-                    }
-                }
-            }
-        }
-    }
+    // Per-output H.264 encoders — created on demand when outputs appear
+    let mut h264_encoders: HashMap<String, Box<dyn dinator_encode::Encoder>> = HashMap::new();
+    let encoder_pref_owned = encoder_pref.to_string();
     let mut encode_frame_count: u64 = 0;
     let mut gfx_frames_dropped: u64 = 0;
 
@@ -1521,9 +1481,25 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     }
                 }
             }
-            // Remove render state for removed outputs
+            // Remove render state and encoders for removed outputs
             let live_names: Vec<String> = outputs.iter().map(|o| o.name()).collect();
             output_render_states.retain(|name, _| live_names.contains(name));
+            h264_encoders.retain(|name, _| live_names.contains(name));
+
+            // Ensure per-output encoders exist
+            for o in &outputs {
+                let name = o.name();
+                if !h264_encoders.contains_key(&name) {
+                    if let Some(geo) = state.space.output_geometry(o) {
+                        let w = geo.size.w as u32;
+                        let h = geo.size.h as u32;
+                        if let Some(enc) = create_encoder(w, h, &encoder_pref_owned) {
+                            info!(output = %name, w, h, encoder = enc.name(), "created H.264 encoder for output");
+                            h264_encoders.insert(name, enc);
+                        }
+                    }
+                }
+            }
 
             // Check for pending resolution change (applies to focused output)
             if let Some((new_w, new_h)) = pending_resize_render.lock().unwrap().take() {
@@ -1542,11 +1518,17 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     match renderer.create_buffer(Fourcc::Abgr8888, Size::from((new_w as i32, new_h as i32))) {
                         Ok(new_rb) => {
                             let dt = OutputDamageTracker::from_output(&focused);
-                            output_render_states.insert(name, (new_rb, dt));
+                            output_render_states.insert(name.clone(), (new_rb, dt));
                         }
                         Err(e) => {
                             tracing::error!("failed to create renderbuffer for resize: {e:?}");
                         }
+                    }
+
+                    // Recreate encoder for this output at new size
+                    h264_encoders.remove(&name);
+                    if let Some(enc) = create_encoder(new_w as u32, new_h as u32, &encoder_pref_owned) {
+                        h264_encoders.insert(name, enc);
                     }
 
                     state.retile(&focused);
@@ -1566,7 +1548,31 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 (max_x.max(1) as u16, max_y.max(1) as u16)
             };
 
-            // Resize VNC/RDP/encoder if composite dimensions changed
+            // Build GFX output info from current outputs
+            let gfx_outputs: Vec<gfx::GfxOutputInfo> = outputs
+                .iter()
+                .enumerate()
+                .filter_map(|(i, o)| {
+                    state.space.output_geometry(o).map(|geo| gfx::GfxOutputInfo {
+                        name: o.name(),
+                        surface_id: i as u16,
+                        x: geo.loc.x as u32,
+                        y: geo.loc.y as u32,
+                        width: geo.size.w as u16,
+                        height: geo.size.h as u16,
+                    })
+                })
+                .collect();
+
+            // Update GFX shared state with current output layout
+            {
+                let mut gfx = gfx_state_render.lock().unwrap();
+                gfx.outputs = gfx_outputs.clone();
+                gfx.composite_width = new_cw;
+                gfx.composite_height = new_ch;
+            }
+
+            // Resize VNC/RDP if composite dimensions changed
             if new_cw != composite_width || new_ch != composite_height {
                 info!(
                     old_w = composite_width, old_h = composite_height,
@@ -1592,27 +1598,31 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     }
                 }
 
-                // Reset GFX surface at new composite dimensions
+                // Reset GFX surfaces for new layout
                 {
-                    let mut gfx = gfx_state_render.lock().unwrap();
+                    let gfx = gfx_state_render.lock().unwrap();
                     if gfx.ready {
-                        gfx.width = composite_width;
-                        gfx.height = composite_height;
+                        let old_outputs = gfx.outputs.clone();
                         if let Some(channel_id) = gfx.channel_id {
-                            match gfx::build_reset_surface_pdus(composite_width, composite_height) {
+                            match gfx::build_reset_surface_pdus(&old_outputs, &gfx_outputs, composite_width, composite_height) {
                                 Ok(data) => {
                                     if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
                                         let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
                                             channel_id,
                                             data,
                                         });
-                                        info!(width = composite_width, height = composite_height, "GFX: sent surface reset for composite resize");
+                                        info!(
+                                            width = composite_width, height = composite_height,
+                                            outputs = gfx_outputs.len(),
+                                            "GFX: sent multi-surface reset"
+                                        );
                                     }
                                 }
                                 Err(e) => tracing::warn!(error = %e, "GFX: failed to build reset PDUs"),
                             }
                         }
-                        if let Some(ref mut enc) = h264_encoder {
+                        // Force keyframe on all encoders
+                        for enc in h264_encoders.values_mut() {
                             enc.force_keyframe();
                         }
                     }
@@ -1624,8 +1634,17 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 });
             }
 
-            // Render each output to its renderbuffer
-            let mut any_damage = false;
+            // Render each output and collect per-output pixel data
+            struct DirtyOutput {
+                name: String,
+                x: usize,
+                y: usize,
+                width: u16,
+                height: u16,
+                pixels: Vec<u8>, // RGBA from GL readback
+            }
+            let mut dirty_outputs: Vec<DirtyOutput> = Vec::new();
+
             for o in &outputs {
                 let name = o.name();
                 let Some((ref mut rb, ref mut dt)) = output_render_states.get_mut(&name) else { continue };
@@ -1651,28 +1670,19 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                         };
 
                         if has_damage {
-                            any_damage = true;
-                            // Read pixels and blit into composite buffer
                             let region = Rectangle::from_size(
                                 Size::from((ow as i32, oh as i32)),
                             );
                             if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
                                 if let Ok(pixels) = renderer.map_texture(&mapping) {
-                                    let src: &[u8] = pixels.as_ref();
-                                    let ox = geo.loc.x as usize;
-                                    let oy = geo.loc.y as usize;
-                                    let row_bytes = ow as usize * 4;
-                                    let stride = composite_width as usize * 4;
-                                    for row in 0..oh as usize {
-                                        let src_start = row * row_bytes;
-                                        let dst_start = (oy + row) * stride + ox * 4;
-                                        if src_start + row_bytes <= src.len()
-                                            && dst_start + row_bytes <= composite_buffer.len()
-                                        {
-                                            composite_buffer[dst_start..dst_start + row_bytes]
-                                                .copy_from_slice(&src[src_start..src_start + row_bytes]);
-                                        }
-                                    }
+                                    dirty_outputs.push(DirtyOutput {
+                                        name: name.clone(),
+                                        x: geo.loc.x as usize,
+                                        y: geo.loc.y as usize,
+                                        width: ow,
+                                        height: oh,
+                                        pixels: pixels.to_vec(),
+                                    });
                                 }
                             }
                         }
@@ -1700,80 +1710,106 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                 *dt = OutputDamageTracker::from_output(o);
                             }
                         }
-                        if let Some(ref mut enc) = h264_encoder {
+                        // Force keyframe on all per-output encoders
+                        for enc in h264_encoders.values_mut() {
                             enc.force_keyframe();
-                            info!("GFX: forced H.264 keyframe for initial frame");
                         }
+                        info!("GFX: forced H.264 keyframes on {} encoders", h264_encoders.len());
                     }
                 }
             }
 
-            // Export composite pixels when any output had damage
-            if any_damage {
-                // R/B swap for VNC/RDP (RGBA→BGRA)
-                let mut frame = composite_buffer.clone();
-                for chunk in frame.chunks_exact_mut(4) {
+            if !dirty_outputs.is_empty() {
+                // Composite into combined buffer for VNC and RDP bitmap fallback
+                for d in &dirty_outputs {
+                    let row_bytes = d.width as usize * 4;
+                    let stride = composite_width as usize * 4;
+                    for row in 0..d.height as usize {
+                        let src_start = row * row_bytes;
+                        let dst_start = (d.y + row) * stride + d.x * 4;
+                        if src_start + row_bytes <= d.pixels.len()
+                            && dst_start + row_bytes <= composite_buffer.len()
+                        {
+                            composite_buffer[dst_start..dst_start + row_bytes]
+                                .copy_from_slice(&d.pixels[src_start..src_start + row_bytes]);
+                        }
+                    }
+                }
+
+                // R/B swap composite for VNC (RGBA→BGRA)
+                let mut vnc_frame = composite_buffer.clone();
+                for chunk in vnc_frame.chunks_exact_mut(4) {
                     chunk.swap(0, 2);
                 }
-                let _ = pixel_tx.try_send(frame.clone());
+                let _ = pixel_tx.try_send(vnc_frame.clone());
 
-                // H.264 encode and send via GFX
-                if let Some(ref mut encoder) = h264_encoder {
-                    let t0 = std::time::Instant::now();
-                    match encoder.encode(&frame, composite_width as u32, composite_height as u32) {
-                        Ok(Some(encoded)) => {
-                            encode_frame_count += 1;
-                            let elapsed = t0.elapsed();
-                            if encode_frame_count % 60 == 1 {
-                                info!(
-                                    encoder = encoder.name(),
-                                    frame = encode_frame_count,
-                                    bytes = encoded.data.len(),
-                                    keyframe = encoded.is_keyframe,
-                                    encode_ms = elapsed.as_secs_f64() * 1000.0,
-                                    "H.264 encode"
-                                );
-                            }
+                // Per-surface GFX encoding (each output gets its own H.264 stream)
+                let gfx_ready = gfx_state_render.lock().unwrap().ready;
+                if gfx_ready {
+                    for d in &dirty_outputs {
+                        let Some(encoder) = h264_encoders.get_mut(&d.name) else { continue };
+                        let surface_id = gfx_state_render.lock().unwrap()
+                            .surface_id_for_output(&d.name)
+                            .unwrap_or(0);
 
-                            let gfx = gfx_state_render.lock().unwrap();
-                            if gfx.ready {
-                                if let Some(channel_id) = gfx.channel_id {
-                                    let frame_id = gfx.next_frame_id;
-                                    drop(gfx);
+                        // R/B swap per-output pixels for H.264 (RGBA→BGRA)
+                        let mut bgra = d.pixels.clone();
+                        for chunk in bgra.chunks_exact_mut(4) {
+                            chunk.swap(0, 2);
+                        }
 
-                                    let h264_len = encoded.data.len();
-                                    const MAX_GFX_FRAME_BYTES: usize = 80_000;
+                        match encoder.encode(&bgra, d.width as u32, d.height as u32) {
+                            Ok(Some(encoded)) => {
+                                encode_frame_count += 1;
+                                if encode_frame_count % 60 == 1 {
+                                    info!(
+                                        output = %d.name,
+                                        encoder = encoder.name(),
+                                        frame = encode_frame_count,
+                                        bytes = encoded.data.len(),
+                                        keyframe = encoded.is_keyframe,
+                                        "H.264 encode"
+                                    );
+                                }
 
-                                    if h264_len < 50 && !encoded.is_keyframe {
-                                        // No visual change — skip
-                                    } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
-                                        gfx_frames_dropped += 1;
-                                        if gfx_frames_dropped <= 3 || gfx_frames_dropped % 30 == 0 {
-                                            info!(
-                                                frame_id,
-                                                h264_bytes = h264_len,
-                                                dropped = gfx_frames_dropped,
-                                                "GFX: dropping oversized P-frame"
-                                            );
-                                        }
-                                        gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
-                                    } else {
-                                        match gfx::encode_gfx_avc420_frame(
-                                            &encoded.data,
-                                            composite_width,
-                                            composite_height,
-                                            frame_id,
-                                        ) {
-                                            Ok(gfx_data) => {
+                                let h264_len = encoded.data.len();
+                                const MAX_GFX_FRAME_BYTES: usize = 80_000;
+
+                                if h264_len < 50 && !encoded.is_keyframe {
+                                    // No visual change — skip
+                                } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
+                                    gfx_frames_dropped += 1;
+                                    if gfx_frames_dropped <= 3 || gfx_frames_dropped % 30 == 0 {
+                                        info!(
+                                            output = %d.name,
+                                            h264_bytes = h264_len,
+                                            dropped = gfx_frames_dropped,
+                                            "GFX: dropping oversized P-frame"
+                                        );
+                                    }
+                                    gfx_state_render.lock().unwrap().next_frame_id += 1;
+                                } else {
+                                    let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
+                                    match gfx::encode_gfx_avc420_frame(
+                                        &encoded.data,
+                                        surface_id,
+                                        d.width,
+                                        d.height,
+                                        frame_id,
+                                    ) {
+                                        Ok(gfx_data) => {
+                                            let channel_id = gfx_state_render.lock().unwrap().channel_id;
+                                            if let Some(channel_id) = channel_id {
                                                 if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
-                                                    let is_large = gfx_data.len() > 50_000;
-                                                    if frame_id % 60 == 0 || frame_id <= 5 || encoded.is_keyframe || is_large {
+                                                    if frame_id % 60 == 0 || frame_id <= 5 || encoded.is_keyframe {
                                                         info!(
+                                                            output = %d.name,
                                                             frame_id,
+                                                            surface_id,
                                                             h264_bytes = h264_len,
                                                             gfx_bytes = gfx_data.len(),
                                                             keyframe = encoded.is_keyframe,
-                                                            "GFX: sending H.264 frame via DVC"
+                                                            "GFX: sending per-surface frame"
                                                         );
                                                     }
                                                     let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
@@ -1782,27 +1818,26 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                                     });
                                                     gfx_frames_dropped = 0;
                                                 }
-                                                gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
                                             }
-                                            Err(e) => {
-                                                tracing::warn!(error = %e, "GFX frame encode failed");
-                                            }
+                                            gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(output = %d.name, error = %e, "GFX frame encode failed");
                                         }
                                     }
                                 }
                             }
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            tracing::warn!(error = %e, "H.264 encode failed");
+                            Ok(None) => {}
+                            Err(e) => {
+                                tracing::warn!(output = %d.name, error = %e, "H.264 encode failed");
+                            }
                         }
                     }
                 }
 
                 // Send to RDP bitmap pipeline only if GFX is NOT active
-                let gfx_active = gfx_state_render.lock().unwrap().ready;
-                if !gfx_active {
-                    let _ = rdp_pixel_tx.try_send(frame);
+                if !gfx_ready {
+                    let _ = rdp_pixel_tx.try_send(vnc_frame);
                 }
             }
 
@@ -1959,6 +1994,34 @@ struct PluginKeybinding {
     keysym: u32,
     /// The callback ID to invoke.
     callback_id: String,
+}
+
+/// Create an H.264 encoder with the given preference.
+fn create_encoder(width: u32, height: u32, pref: &str) -> Option<Box<dyn dinator_encode::Encoder>> {
+    if pref == "openh264" {
+        match dinator_encode::OpenH264Encoder::new(width, height, 2_000_000) {
+            Ok(enc) => return Some(Box::new(enc)),
+            Err(e) => tracing::warn!(error = %e, "openh264 encoder failed"),
+        }
+    } else {
+        let ffmpeg_pref = match pref {
+            "vaapi" => dinator_encode::FfmpegEncoderPreference::Vaapi,
+            "nvenc" => dinator_encode::FfmpegEncoderPreference::Nvenc,
+            "x264" => dinator_encode::FfmpegEncoderPreference::Software,
+            _ => dinator_encode::FfmpegEncoderPreference::Auto,
+        };
+        match dinator_encode::FfmpegEncoder::new(width, height, 2_000_000, ffmpeg_pref) {
+            Ok(enc) => return Some(Box::new(enc)),
+            Err(e) => {
+                tracing::info!(error = %e, "FFmpeg encoder unavailable, trying openh264");
+                match dinator_encode::OpenH264Encoder::new(width, height, 2_000_000) {
+                    Ok(enc) => return Some(Box::new(enc)),
+                    Err(e2) => tracing::warn!(error = %e2, "no H.264 encoder available"),
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Map number keysyms (both shifted and unshifted) to workspace numbers 1-9.

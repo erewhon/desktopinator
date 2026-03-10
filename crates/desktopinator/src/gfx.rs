@@ -41,8 +41,16 @@ impl DvcEncode for GfxPdu {}
 /// GFX channel name per MS-RDPEGFX spec.
 const GFX_CHANNEL_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 
-/// Surface ID we use for the main display.
-const SURFACE_ID: u16 = 0;
+/// Per-output surface info for GFX multi-monitor.
+#[derive(Debug, Clone)]
+pub struct GfxOutputInfo {
+    pub name: String,
+    pub surface_id: u16,
+    pub x: u32,
+    pub y: u32,
+    pub width: u16,
+    pub height: u16,
+}
 
 /// Queued GFX data to send via ServerEvent::Dvc (avoids DVC process() return path issues).
 #[derive(Debug)]
@@ -60,9 +68,11 @@ pub struct GfxSharedState {
     pub ready: bool,
     /// Whether the client supports AVC420.
     pub avc_supported: bool,
-    /// Current surface dimensions.
-    pub width: u16,
-    pub height: u16,
+    /// Per-output surface info. Updated by the render loop when outputs change.
+    pub outputs: Vec<GfxOutputInfo>,
+    /// Composite dimensions (bounding box of all outputs).
+    pub composite_width: u16,
+    pub composite_height: u16,
     /// Next frame ID to use.
     pub next_frame_id: u32,
     /// Last frame ID acknowledged by the client.
@@ -77,15 +87,26 @@ impl GfxSharedState {
             channel_id: None,
             ready: false,
             avc_supported: false,
-            width,
-            height,
+            outputs: vec![GfxOutputInfo {
+                name: String::new(),
+                surface_id: 0,
+                x: 0,
+                y: 0,
+                width,
+                height,
+            }],
+            composite_width: width,
+            composite_height: height,
             next_frame_id: 0,
             last_acked_frame_id: None,
             pending_response: None,
         }
     }
 
-
+    /// Look up surface_id for an output by name.
+    pub fn surface_id_for_output(&self, name: &str) -> Option<u16> {
+        self.outputs.iter().find(|o| o.name == name).map(|o| o.surface_id)
+    }
 }
 
 /// DVC processor for the RDPEGFX channel.
@@ -194,13 +215,14 @@ impl GfxHandler {
         info!(?selected_cap, avc_supported, "GFX: selected capability");
 
         let state = self.state.lock().unwrap();
-        let width = state.width;
-        let height = state.height;
+        let outputs = state.outputs.clone();
+        let composite_width = state.composite_width;
+        let composite_height = state.composite_height;
         drop(state);
 
         // FreeRDP two-phase approach per MS-RDPEGFX 3.2.5.2:
         // Phase 1 (synchronous): Send CapabilitiesConfirm immediately via process() return
-        // Phase 2 (deferred): Send ResetGraphics + CreateSurface + MapSurfaceToOutput
+        // Phase 2 (deferred): Send ResetGraphics + per-output CreateSurface + MapSurfaceToOutput
         //                     via ServerEvent::Dvc on the next render tick
 
         // Phase 1: CapabilitiesConfirm (ZGFX-wrapped per MS-RDPEGFX 2.2.2)
@@ -212,40 +234,55 @@ impl GfxHandler {
         let caps_encoded = wrap_zgfx_uncompressed(&caps_raw);
         debug!(raw_len = caps_raw.len(), zgfx_len = caps_encoded.len(), "GFX: encoded CapabilitiesConfirm");
 
-        // Phase 2: Queue ResetGraphics + CreateSurface + MapSurfaceToOutput for deferred send
+        // Phase 2: Build per-output monitor list and surfaces
+        let monitors: Vec<Monitor> = outputs
+            .iter()
+            .enumerate()
+            .map(|(i, o)| Monitor {
+                left: o.x as i32,
+                top: o.y as i32,
+                right: (o.x as i32) + (o.width as i32) - 1,
+                bottom: (o.y as i32) + (o.height as i32) - 1,
+                flags: if i == 0 { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+            })
+            .collect();
+
         let reset_graphics = gfx::ServerPdu::ResetGraphics(ResetGraphicsPdu {
-            width: width as u32,
-            height: height as u32,
-            monitors: vec![Monitor {
-                left: 0,
-                top: 0,
-                right: (width as i32) - 1,
-                bottom: (height as i32) - 1,
-                flags: MonitorFlags::PRIMARY,
-            }],
-        });
-        let create_surface = gfx::ServerPdu::CreateSurface(CreateSurfacePdu {
-            surface_id: SURFACE_ID,
-            width,
-            height,
-            pixel_format: PixelFormat::XRgb,
-        });
-        let map_surface = gfx::ServerPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
-            surface_id: SURFACE_ID,
-            output_origin_x: 0,
-            output_origin_y: 0,
+            width: composite_width as u32,
+            height: composite_height as u32,
+            monitors,
         });
 
-        // Concatenate raw GFX PDUs, then ZGFX-wrap the whole batch.
-        // GFX PDUs are self-delimiting (each has pduLength), so concatenation is safe.
         let mut deferred_raw = Vec::new();
-        for pdu in [reset_graphics, create_surface, map_surface] {
-            let encoded = encode_vec(&pdu)
-                .map_err(|e| ironrdp_pdu::pdu_other_err!("failed to encode GFX PDU", source: e))?;
-            deferred_raw.extend_from_slice(&encoded);
+        let encoded = encode_vec(&reset_graphics)
+            .map_err(|e| ironrdp_pdu::pdu_other_err!("failed to encode GFX PDU", source: e))?;
+        deferred_raw.extend_from_slice(&encoded);
+
+        // Create one surface per output and map it to its position
+        for o in &outputs {
+            let create = gfx::ServerPdu::CreateSurface(CreateSurfacePdu {
+                surface_id: o.surface_id,
+                width: o.width,
+                height: o.height,
+                pixel_format: PixelFormat::XRgb,
+            });
+            let map = gfx::ServerPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+                surface_id: o.surface_id,
+                output_origin_x: o.x,
+                output_origin_y: o.y,
+            });
+            for pdu in [create, map] {
+                let encoded = encode_vec(&pdu)
+                    .map_err(|e| ironrdp_pdu::pdu_other_err!("failed to encode GFX PDU", source: e))?;
+                deferred_raw.extend_from_slice(&encoded);
+            }
         }
+
         let deferred = wrap_zgfx_uncompressed(&deferred_raw);
-        debug!(raw_len = deferred_raw.len(), zgfx_len = deferred.len(), "GFX: queued deferred PDUs (ResetGraphics+Surface)");
+        debug!(
+            raw_len = deferred_raw.len(), zgfx_len = deferred.len(),
+            outputs = outputs.len(), "GFX: queued deferred PDUs (ResetGraphics + {} surfaces)", outputs.len()
+        );
 
         let mut state = self.state.lock().unwrap();
         state.pending_response = Some(GfxPendingResponse {
@@ -253,7 +290,11 @@ impl GfxHandler {
             data: deferred,
         });
         state.avc_supported = avc_supported;
-        info!(width, height, avc_supported, "GFX: caps confirmed, surface setup deferred");
+        info!(
+            composite_w = composite_width, composite_h = composite_height,
+            outputs = outputs.len(), avc_supported,
+            "GFX: caps confirmed, multi-surface setup deferred"
+        );
 
         // Return CapabilitiesConfirm via DVC process() return path
         Ok(vec![Box::new(GfxPdu(caps_encoded))])
@@ -430,42 +471,69 @@ fn wrap_zgfx_uncompressed(gfx_pdu: &[u8]) -> Vec<u8> {
     wrapped
 }
 
-/// Build GFX PDUs to reset the surface at a new resolution.
-/// Returns ZGFX-wrapped bytes of DeleteSurface + ResetGraphics + CreateSurface + MapSurfaceToOutput.
-pub fn build_reset_surface_pdus(width: u16, height: u16) -> anyhow::Result<Vec<u8>> {
+/// Build GFX PDUs to reset surfaces for a multi-monitor layout.
+/// Deletes old surfaces, sends ResetGraphics with monitor list,
+/// creates new per-output surfaces, and maps them to their positions.
+pub fn build_reset_surface_pdus(
+    old_outputs: &[GfxOutputInfo],
+    new_outputs: &[GfxOutputInfo],
+    composite_width: u16,
+    composite_height: u16,
+) -> anyhow::Result<Vec<u8>> {
     use ironrdp_pdu::rdp::vc::dvc::gfx::DeleteSurfacePdu;
 
-    let delete_surface = gfx::ServerPdu::DeleteSurface(DeleteSurfacePdu {
-        surface_id: SURFACE_ID,
-    });
-    let reset_graphics = gfx::ServerPdu::ResetGraphics(ResetGraphicsPdu {
-        width: width as u32,
-        height: height as u32,
-        monitors: vec![Monitor {
-            left: 0,
-            top: 0,
-            right: (width as i32) - 1,
-            bottom: (height as i32) - 1,
-            flags: MonitorFlags::PRIMARY,
-        }],
-    });
-    let create_surface = gfx::ServerPdu::CreateSurface(CreateSurfacePdu {
-        surface_id: SURFACE_ID,
-        width,
-        height,
-        pixel_format: PixelFormat::XRgb,
-    });
-    let map_surface = gfx::ServerPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
-        surface_id: SURFACE_ID,
-        output_origin_x: 0,
-        output_origin_y: 0,
-    });
-
     let mut raw = Vec::new();
-    for pdu in [delete_surface, reset_graphics, create_surface, map_surface] {
-        let encoded = encode_vec(&pdu)
+
+    // Delete all old surfaces
+    for o in old_outputs {
+        let delete = gfx::ServerPdu::DeleteSurface(DeleteSurfacePdu {
+            surface_id: o.surface_id,
+        });
+        let encoded = encode_vec(&delete)
             .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
         raw.extend_from_slice(&encoded);
+    }
+
+    // ResetGraphics with monitor list
+    let monitors: Vec<Monitor> = new_outputs
+        .iter()
+        .enumerate()
+        .map(|(i, o)| Monitor {
+            left: o.x as i32,
+            top: o.y as i32,
+            right: (o.x as i32) + (o.width as i32) - 1,
+            bottom: (o.y as i32) + (o.height as i32) - 1,
+            flags: if i == 0 { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+        })
+        .collect();
+
+    let reset = gfx::ServerPdu::ResetGraphics(ResetGraphicsPdu {
+        width: composite_width as u32,
+        height: composite_height as u32,
+        monitors,
+    });
+    let encoded = encode_vec(&reset)
+        .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+    raw.extend_from_slice(&encoded);
+
+    // Create and map each new surface
+    for o in new_outputs {
+        let create = gfx::ServerPdu::CreateSurface(CreateSurfacePdu {
+            surface_id: o.surface_id,
+            width: o.width,
+            height: o.height,
+            pixel_format: PixelFormat::XRgb,
+        });
+        let map = gfx::ServerPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu {
+            surface_id: o.surface_id,
+            output_origin_x: o.x,
+            output_origin_y: o.y,
+        });
+        for pdu in [create, map] {
+            let encoded = encode_vec(&pdu)
+                .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+            raw.extend_from_slice(&encoded);
+        }
     }
 
     Ok(wrap_zgfx_uncompressed(&raw))
@@ -476,6 +544,7 @@ pub fn build_reset_surface_pdus(width: u16, height: u16) -> anyhow::Result<Vec<u
 /// Returns the concatenated bytes of StartFrame + WireToSurface1(AVC420) + EndFrame.
 pub fn encode_gfx_avc420_frame(
     h264_data: &[u8],
+    surface_id: u16,
     width: u16,
     height: u16,
     frame_id: u32,
@@ -512,7 +581,7 @@ pub fn encode_gfx_avc420_frame(
         .map_err(|e| anyhow::anyhow!("failed to encode AVC420 stream: {e}"))?;
 
     let wire_to_surface = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
-        surface_id: SURFACE_ID,
+        surface_id,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
         destination_rectangle: InclusiveRectangle {
