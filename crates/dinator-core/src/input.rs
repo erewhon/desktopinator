@@ -163,7 +163,7 @@ impl DinatorState {
         &mut self,
         event: impl PointerMotionAbsoluteEvent<B>,
     ) {
-        let output = self.space.outputs().next().cloned();
+        let output = self.get_focused_output();
         let Some(output) = output else { return };
         let Some(output_geo) = self.space.output_geometry(&output) else {
             return;

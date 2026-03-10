@@ -74,14 +74,14 @@ impl XwmHandler for DinatorState {
         if let Some(id) = self.x11_surface_to_id.remove(&window.window_id()) {
             self.emit_event(IpcEvent::WindowClosed { id: id.0 });
 
-            self.window_order.retain(|w| *w != id);
-            self.floating.remove(&id);
-            self.fullscreen.remove(&id);
-            self.window_workspace.remove(&id);
-
+            // Remove from workspace tracking
+            let ws = self.window_workspace.remove(&id);
             for order in self.workspace_order.values_mut() {
                 order.retain(|w| *w != id);
             }
+            self.floating.remove(&id);
+            self.fullscreen.remove(&id);
+
             for focus in self.workspace_focus.values_mut() {
                 if *focus == Some(id) {
                     *focus = None;
@@ -96,13 +96,17 @@ impl XwmHandler for DinatorState {
                 self.space.unmap_elem(&w);
             }
 
-            let output = self.space.outputs().next().cloned();
-            if let Some(output) = output {
-                self.retile(&output);
+            // Retile the output showing this window's workspace
+            if let Some(ws) = ws {
+                if let Some(output) = self.output_for_workspace(ws) {
+                    self.retile(&output);
+                }
             }
 
-            // Focus next window
-            if let Some(&next_id) = self.window_order.last() {
+            // Focus next window on the focused workspace
+            let focus_ws = self.focused_workspace();
+            let ws_windows = self.ws_window_list(focus_ws).to_vec();
+            if let Some(&next_id) = ws_windows.last() {
                 if let Some(window) = self.window_map.get(&next_id) {
                     if let Some(surface) = Self::window_wl_surface(window) {
                         let serial = SERIAL_COUNTER.next_serial();
@@ -120,10 +124,12 @@ impl XwmHandler for DinatorState {
             .retain(|w| w.window_id() != window.window_id());
 
         if let Some(id) = self.x11_surface_to_id.remove(&window.window_id()) {
-            self.window_order.retain(|w| *w != id);
+            self.window_workspace.remove(&id);
+            for order in self.workspace_order.values_mut() {
+                order.retain(|w| *w != id);
+            }
             self.floating.remove(&id);
             self.fullscreen.remove(&id);
-            self.window_workspace.remove(&id);
 
             if let Some(wl_surface) = window.wl_surface() {
                 self.surface_to_id.remove(&wl_surface);
@@ -199,8 +205,7 @@ impl XwmHandler for DinatorState {
         if let Some(&id) = self.x11_surface_to_id.get(&window.window_id()) {
             self.floating.remove(&id);
             self.fullscreen.insert(id);
-            let output = self.space.outputs().next().cloned();
-            if let Some(output) = output {
+            if let Some(output) = self.get_focused_output() {
                 self.retile(&output);
             }
         }
@@ -210,8 +215,7 @@ impl XwmHandler for DinatorState {
         if let Some(&id) = self.x11_surface_to_id.get(&window.window_id()) {
             self.fullscreen.remove(&id);
             let _ = window.set_fullscreen(false);
-            let output = self.space.outputs().next().cloned();
-            if let Some(output) = output {
+            if let Some(output) = self.get_focused_output() {
                 self.retile(&output);
             }
         }
@@ -262,6 +266,7 @@ impl DinatorState {
 
         let id = Self::next_window_id();
         let smithay_window = Window::new_x11_window(window.clone());
+        let ws = self.focused_workspace();
 
         info!(
             title = ?window.title(),
@@ -270,16 +275,16 @@ impl DinatorState {
             "XWayland: window mapped"
         );
 
-        self.window_order.push(id);
+        self.ws_window_list_mut(ws).push(id);
         self.window_map.insert(id, smithay_window.clone());
         self.surface_to_id.insert(wl_surface.clone(), id);
         self.x11_surface_to_id.insert(window.window_id(), id);
-        self.window_workspace.insert(id, self.active_workspace);
+        self.window_workspace.insert(id, ws);
 
         let _ = window.set_activated(true);
 
         // Map and retile
-        let output = self.space.outputs().next().cloned();
+        let output = self.get_focused_output();
         self.space.map_element(smithay_window, (0, 0), false);
         if let Some(ref output) = output {
             output.enter(&wl_surface);
@@ -312,15 +317,13 @@ impl DinatorState {
             if rule.float {
                 info!(class = ?window.class(), "XWayland window rule: auto-float");
                 self.floating.insert(id);
-                let output = self.space.outputs().next().cloned();
-                if let Some(ref output) = output {
+                if let Some(ref output) = self.get_focused_output() {
                     self.retile(output);
                 }
             } else if rule.fullscreen {
                 info!(class = ?window.class(), "XWayland window rule: auto-fullscreen");
                 self.fullscreen.insert(id);
-                let output = self.space.outputs().next().cloned();
-                if let Some(ref output) = output {
+                if let Some(ref output) = self.get_focused_output() {
                     self.retile(output);
                 }
             }

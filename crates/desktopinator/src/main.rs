@@ -140,7 +140,7 @@ fn build_render_elements(
     }
 
     // Render gradient background as horizontal bands (behind everything else)
-    if let dinator_core::Background::Gradient { top, bottom } = &state.background {
+    if let dinator_core::Background::Gradient { top, bottom } = state.background_for_output(output) {
         if let Some(mode) = output.current_mode() {
             let height = mode.size.h;
             let num_bands = 64; // balance between smoothness and element count
@@ -291,6 +291,7 @@ fn run_winit() -> anyhow::Result<()> {
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
+    state.register_output(&output);
     state.seat.add_keyboard(Default::default(), 200, 25)?;
     state.seat.add_pointer();
 
@@ -378,7 +379,7 @@ fn run_winit() -> anyhow::Result<()> {
                         &mut framebuffer,
                         0,
                         &elements,
-                        background_clear_color(&state.background),
+                        background_clear_color(state.background_for_output(&output)),
                     );
                 }
 
@@ -777,6 +778,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
 
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
+    state.register_output(&output);
     state.seat.add_keyboard(Default::default(), 200, 25)?;
     state.seat.add_pointer();
 
@@ -1063,12 +1065,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                 KeyAction::SwapMaster => state.swap_master(),
                                 KeyAction::MasterGrow | KeyAction::MasterShrink => {
                                     let changed = if matches!(action, KeyAction::MasterGrow) {
-                                        state.layout.grow_master()
+                                        state.grow_master()
                                     } else {
-                                        state.layout.shrink_master()
+                                        state.shrink_master()
                                     };
                                     if changed {
-                                        let output = state.space.outputs().next().cloned();
+                                        let output = state.get_focused_output();
                                         if let Some(output) = output {
                                             state.retile(&output);
                                         }
@@ -1081,10 +1083,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                     state.toggle_float();
                                 }
                                 KeyAction::ToggleMonocle => {
-                                    let current = state.layout.name();
+                                    let current = state.layout_name();
                                     let new_layout = if current == "monocle" { "column" } else { "monocle" };
                                     state.set_layout(new_layout);
-                                    let output = state.space.outputs().next().cloned();
+                                    let output = state.get_focused_output();
                                     if let Some(output) = output {
                                         state.retile(&output);
                                     }
@@ -1349,12 +1351,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             KeyAction::SwapMaster => state.swap_master(),
                             KeyAction::MasterGrow | KeyAction::MasterShrink => {
                                 let changed = if matches!(action, KeyAction::MasterGrow) {
-                                    state.layout.grow_master()
+                                    state.grow_master()
                                 } else {
-                                    state.layout.shrink_master()
+                                    state.shrink_master()
                                 };
                                 if changed {
-                                    let output = state.space.outputs().next().cloned();
+                                    let output = state.get_focused_output();
                                     if let Some(output) = output {
                                         state.retile(&output);
                                     }
@@ -1363,10 +1365,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             KeyAction::ToggleFullscreen => { state.toggle_fullscreen(); }
                             KeyAction::ToggleFloat => { state.toggle_float(); }
                             KeyAction::ToggleMonocle => {
-                                let current = state.layout.name();
+                                let current = state.layout_name();
                                 let new_layout = if current == "monocle" { "column" } else { "monocle" };
                                 state.set_layout(new_layout);
-                                let output = state.space.outputs().next().cloned();
+                                let output = state.get_focused_output();
                                 if let Some(output) = output {
                                     state.retile(&output);
                                 }
@@ -1605,7 +1607,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             &mut target,
                             0,
                             &elements,
-                            background_clear_color(&state.background),
+                            background_clear_color(state.background_for_output(output)),
                         ) {
                             Ok(result) => result.damage.is_some_and(|d| !d.is_empty()),
                             Err(_) => false,
@@ -2112,12 +2114,12 @@ fn handle_ipc_command(
             IpcResponse::Ok { message: None }
         }
         IpcCommand::MasterGrow => {
-            if state.layout.grow_master() {
-                let output = state.space.outputs().next().cloned();
+            if state.grow_master() {
+                let output = state.get_focused_output();
                 if let Some(output) = output {
                     state.retile(&output);
                 }
-                let ratio = state.layout.master_ratio().unwrap_or(0.0);
+                let ratio = state.master_ratio().unwrap_or(0.0);
                 IpcResponse::Ok {
                     message: Some(format!("master ratio: {ratio:.0}%", ratio = ratio * 100.0)),
                 }
@@ -2128,12 +2130,12 @@ fn handle_ipc_command(
             }
         }
         IpcCommand::MasterShrink => {
-            if state.layout.shrink_master() {
-                let output = state.space.outputs().next().cloned();
+            if state.shrink_master() {
+                let output = state.get_focused_output();
                 if let Some(output) = output {
                     state.retile(&output);
                 }
-                let ratio = state.layout.master_ratio().unwrap_or(0.0);
+                let ratio = state.master_ratio().unwrap_or(0.0);
                 IpcResponse::Ok {
                     message: Some(format!("master ratio: {ratio:.0}%", ratio = ratio * 100.0)),
                 }
@@ -2144,14 +2146,15 @@ fn handle_ipc_command(
             }
         }
         IpcCommand::ListWindows => {
-            let windows: Vec<serde_json::Value> = state
-                .window_order
+            let focus_ws = state.focused_workspace();
+            let ws_windows = state.ws_window_list(focus_ws).to_vec();
+            let windows: Vec<serde_json::Value> = ws_windows
                 .iter()
                 .enumerate()
                 .map(|(i, id)| {
                     let is_floating = state.floating.contains(id);
                     let is_fullscreen = state.fullscreen.contains(id);
-                    let ws = state.window_workspace.get(id).copied().unwrap_or(state.active_workspace);
+                    let ws = state.window_workspace.get(id).copied().unwrap_or(focus_ws);
                     let mut entry = serde_json::json!({
                         "index": i,
                         "id": id.0,
@@ -2193,7 +2196,7 @@ fn handle_ipc_command(
         IpcCommand::SetLayout { name } => {
             info!(layout = %name, "IPC: set-layout");
             if state.set_layout(name) {
-                let output = state.space.outputs().next().cloned();
+                let output = state.get_focused_output();
                 if let Some(output) = output {
                     state.retile(&output);
                 }
@@ -2212,7 +2215,7 @@ fn handle_ipc_command(
         }
         IpcCommand::ListLayouts => {
             let layouts = state.available_layouts();
-            let current = state.layout.name().to_string();
+            let current = state.layout_name().to_string();
             let data: Vec<serde_json::Value> = layouts
                 .iter()
                 .map(|name| {
@@ -2249,22 +2252,22 @@ fn handle_ipc_command(
             }
         }
         IpcCommand::ReloadPlugins => {
+            let current_layout = state.layout_name().to_string();
             if let Some(ref mut runtime) = state.plugin_runtime {
                 match runtime.reload() {
                     Ok(()) => {
                         let count = runtime.plugin_info().len();
                         info!(count, "plugins reloaded");
                         // Re-create active layout from new runtime, or fall back
-                        let current = state.layout.name().to_string();
-                        if current != "column" && current != "monocle" {
-                            if let Some(new_layout) = runtime.create_layout(&current) {
-                                state.layout = new_layout;
-                                info!("re-created plugin layout '{current}' from reloaded plugin");
+                        if current_layout != "column" && current_layout != "monocle" {
+                            if let Some(new_layout) = runtime.create_layout(&current_layout) {
+                                state.set_focused_layout(new_layout);
+                                info!("re-created plugin layout '{current_layout}' from reloaded plugin");
                             } else {
-                                state.layout = Box::new(dinator_tiling::ColumnLayout::default());
-                                info!("active plugin layout '{current}' no longer available, fell back to column");
+                                state.set_focused_layout(Box::new(dinator_tiling::ColumnLayout::default()));
+                                info!("active plugin layout '{current_layout}' no longer available, fell back to column");
                             }
-                            let output = state.space.outputs().next().cloned();
+                            let output = state.get_focused_output();
                             if let Some(output) = output {
                                 state.retile(&output);
                             }
@@ -2340,21 +2343,18 @@ fn handle_ipc_command(
             }
         }
         IpcCommand::ListWorkspaces => {
+            let active_ws = state.focused_workspace();
             let data: Vec<serde_json::Value> = (1..=9)
                 .map(|ws| {
-                    let count = if ws == state.active_workspace {
-                        state.window_order.len()
-                    } else {
-                        state
-                            .workspace_order
-                            .get(&ws)
-                            .map(|v| v.len())
-                            .unwrap_or(0)
-                    };
+                    let count = state
+                        .workspace_order
+                        .get(&ws)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
                     serde_json::json!({
                         "workspace": ws,
                         "windows": count,
-                        "active": ws == state.active_workspace,
+                        "active": ws == active_ws,
                     })
                 })
                 .collect();
@@ -2364,8 +2364,8 @@ fn handle_ipc_command(
         }
         IpcCommand::SetGap { pixels } => {
             info!(pixels, "IPC: set-gap");
-            if state.layout.set_gap(*pixels) {
-                let output = state.space.outputs().next().cloned();
+            if state.set_layout_gap(*pixels) {
+                let output = state.get_focused_output();
                 if let Some(output) = output {
                     state.retile(&output);
                 }
@@ -2379,7 +2379,7 @@ fn handle_ipc_command(
             match dinator_core::parse_background(spec) {
                 Some(bg) => {
                     let desc = format!("{bg:?}");
-                    state.background = bg;
+                    state.set_background(bg);
                     IpcResponse::Ok {
                         message: Some(format!("background: {desc}")),
                     }

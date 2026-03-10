@@ -63,9 +63,8 @@ impl CompositorHandler for DinatorState {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
 
-        // Handle layer surface commits
-        let output = self.space.outputs().next().cloned();
-        if let Some(output) = output {
+        // Handle layer surface commits — check all outputs
+        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
             let mut layer_map = layer_map_for_output(&output);
             let layer = layer_map
                 .layer_for_surface(surface, WindowSurfaceType::ALL)
@@ -109,10 +108,6 @@ impl CompositorHandler for DinatorState {
 
             // If the window committed a buffer that doesn't match its configured
             // tiled size, force a re-configure to constrain it back.
-            // We use the latest SENT configure size (current_server_state), not the
-            // last acked size (current_state), because during a layout switch the
-            // client may not have acked the new configure yet. Using the acked size
-            // would fight against the pending layout change.
             if let Some(toplevel) = window.toplevel() {
                 let target = compositor::with_states(toplevel.wl_surface(), |states| {
                     let attrs = states
@@ -150,12 +145,13 @@ impl XdgShellHandler for DinatorState {
         info!("new toplevel window");
         let window = Window::new_wayland_window(surface.clone());
         let id = Self::next_window_id();
+        let ws = self.focused_workspace();
 
-        self.window_order.push(id);
         self.window_map.insert(id, window.clone());
         self.surface_to_id
             .insert(surface.wl_surface().clone(), id);
-        self.window_workspace.insert(id, self.active_workspace);
+        self.window_workspace.insert(id, ws);
+        self.ws_window_list_mut(ws).push(id);
 
         // Mark the toplevel as activated
         surface.with_pending_state(|state| {
@@ -163,7 +159,7 @@ impl XdgShellHandler for DinatorState {
         });
 
         // Map the window and retile
-        let output = self.space.outputs().next().cloned();
+        let output = self.get_focused_output();
         self.space.map_element(window, (0, 0), false);
         if let Some(ref output) = output {
             // Manually send wl_surface.enter so the client knows its output
@@ -173,7 +169,7 @@ impl XdgShellHandler for DinatorState {
             output.enter(surface.wl_surface());
 
             info!(
-                windows = self.window_order.len(),
+                windows = self.ws_window_list(ws).len(),
                 output = %output.name(),
                 "retiling after new window"
             );
@@ -207,8 +203,7 @@ impl XdgShellHandler for DinatorState {
             if rule.float {
                 info!(app_id = ?app_id, "window rule: auto-float");
                 self.floating.insert(id);
-                let output = self.space.outputs().next().cloned();
-                if let Some(ref output) = output {
+                if let Some(ref output) = self.get_focused_output() {
                     // Center the floating window
                     let geo = self.space.output_geometry(output);
                     if let (Some(geo), Some(window)) = (geo, self.window_map.get(&id)) {
@@ -230,8 +225,7 @@ impl XdgShellHandler for DinatorState {
             } else if rule.fullscreen {
                 info!(app_id = ?app_id, "window rule: auto-fullscreen");
                 self.fullscreen.insert(id);
-                let output = self.space.outputs().next().cloned();
-                if let Some(ref output) = output {
+                if let Some(ref output) = self.get_focused_output() {
                     self.retile(output);
                 }
             }
@@ -244,15 +238,15 @@ impl XdgShellHandler for DinatorState {
         if let Some(id) = self.surface_to_id.remove(surface.wl_surface()) {
             self.emit_event(IpcEvent::WindowClosed { id: id.0 });
 
-            self.window_order.retain(|w| *w != id);
-            self.floating.remove(&id);
-            self.fullscreen.remove(&id);
-
-            // Clean up workspace tracking
-            self.window_workspace.remove(&id);
+            // Remove from workspace window list
+            let ws = self.window_workspace.remove(&id);
             for order in self.workspace_order.values_mut() {
                 order.retain(|w| *w != id);
             }
+            self.floating.remove(&id);
+            self.fullscreen.remove(&id);
+
+            // Clean up workspace focus tracking
             for focus in self.workspace_focus.values_mut() {
                 if *focus == Some(id) {
                     *focus = None;
@@ -263,13 +257,17 @@ impl XdgShellHandler for DinatorState {
                 self.space.unmap_elem(&window);
             }
 
-            let output = self.space.outputs().next().cloned();
-            if let Some(output) = output {
-                self.retile(&output);
+            // Retile the output that was showing this window's workspace
+            if let Some(ws) = ws {
+                if let Some(output) = self.output_for_workspace(ws) {
+                    self.retile(&output);
+                }
             }
 
-            // Focus the last window in the order, if any remain
-            if let Some(&next_id) = self.window_order.last() {
+            // Focus the last window in the current workspace, if any remain
+            let focus_ws = self.focused_workspace();
+            let ws_windows = self.ws_window_list(focus_ws).to_vec();
+            if let Some(&next_id) = ws_windows.last() {
                 if let Some(window) = self.window_map.get(&next_id) {
                     if let Some(surface) = Self::window_wl_surface(window) {
                         let serial = SERIAL_COUNTER.next_serial();
@@ -306,8 +304,7 @@ impl XdgShellHandler for DinatorState {
         if let Some(id) = self.surface_to_id.get(surface.wl_surface()).copied() {
             self.floating.remove(&id);
             self.fullscreen.insert(id);
-            let output = self.space.outputs().next().cloned();
-            if let Some(output) = output {
+            if let Some(output) = self.get_focused_output() {
                 self.retile(&output);
             }
         }
@@ -316,8 +313,7 @@ impl XdgShellHandler for DinatorState {
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         if let Some(id) = self.surface_to_id.get(surface.wl_surface()).copied() {
             self.fullscreen.remove(&id);
-            let output = self.space.outputs().next().cloned();
-            if let Some(output) = output {
+            if let Some(output) = self.get_focused_output() {
                 self.retile(&output);
             }
         }
@@ -656,7 +652,7 @@ impl WlrLayerShellHandler for DinatorState {
         let output = output
             .as_ref()
             .and_then(|o| Output::from_resource(o))
-            .or_else(|| self.space.outputs().next().cloned());
+            .or_else(|| self.get_focused_output());
 
         let desktop_surface = DesktopLayerSurface::new(surface, namespace);
 
@@ -679,10 +675,9 @@ impl WlrLayerShellHandler for DinatorState {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        let output = self.space.outputs().next().cloned();
-        if let Some(output) = output {
+        // Search all outputs for this layer surface
+        for output in self.space.outputs().cloned().collect::<Vec<_>>() {
             let mut layer_map = layer_map_for_output(&output);
-            // Find the desktop layer surface that wraps this wlr surface
             let wl_surface = surface.wl_surface().clone();
             let layers: Vec<DesktopLayerSurface> = layer_map
                 .layers()

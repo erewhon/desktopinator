@@ -106,6 +106,23 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
 
 static NEXT_WINDOW_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Per-output state. Each output has independent workspace focus, layout, and background.
+pub struct OutputState {
+    pub active_workspace: usize,
+    pub layout: Box<dyn Layout>,
+    pub background: Background,
+}
+
+impl OutputState {
+    pub fn new() -> Self {
+        Self {
+            active_workspace: 1,
+            layout: Box::new(ColumnLayout::default()),
+            background: Background::default(),
+        }
+    }
+}
+
 pub struct DinatorState {
     pub display: Display<Self>,
     pub display_handle: DisplayHandle,
@@ -134,13 +151,16 @@ pub struct DinatorState {
     pub space: Space<Window>,
     pub start_time: Instant,
 
-    // Tiling
-    pub layout: Box<dyn Layout>,
-    pub window_order: Vec<WindowId>,
+    // Per-output state (layout, workspace focus, background)
+    pub output_states: HashMap<String, OutputState>,
+    /// Name of the currently focused output (receives keyboard input).
+    pub focused_output: Option<String>,
+
+    // Window tracking (global — shared across all outputs)
     pub window_map: HashMap<WindowId, Window>,
     pub surface_to_id: HashMap<WlSurface, WindowId>,
 
-    // Floating & fullscreen
+    // Floating & fullscreen (global window properties)
     pub floating: HashSet<WindowId>,
     pub fullscreen: HashSet<WindowId>,
 
@@ -156,12 +176,10 @@ pub struct DinatorState {
     /// Window rules from plugins: match criteria → auto-apply float/fullscreen.
     pub window_rules: Vec<WindowRule>,
 
-    // Background
-    pub background: Background,
-
-    // Workspaces
-    pub active_workspace: usize,
+    // Workspaces (global — workspace window lists, shared across outputs)
     pub window_workspace: HashMap<WindowId, usize>,
+    /// Window order per workspace. This is the single source of truth —
+    /// no separate `window_order` field. Each output shows one workspace.
     pub workspace_order: HashMap<usize, Vec<WindowId>>,
     pub workspace_focus: HashMap<usize, Option<WindowId>>,
 
@@ -227,8 +245,8 @@ impl DinatorState {
             seat,
             space,
             start_time: Instant::now(),
-            layout: Box::new(ColumnLayout::default()),
-            window_order: Vec::new(),
+            output_states: HashMap::new(),
+            focused_output: None,
             window_map: HashMap::new(),
             surface_to_id: HashMap::new(),
             floating: HashSet::new(),
@@ -237,8 +255,6 @@ impl DinatorState {
             plugin_runtime: None,
             plugin_keybindings: Vec::new(),
             window_rules: Vec::new(),
-            background: Background::default(),
-            active_workspace: 1,
             window_workspace: HashMap::new(),
             workspace_order: HashMap::new(),
             workspace_focus: HashMap::new(),
@@ -265,6 +281,122 @@ impl DinatorState {
             None
         }
     }
+
+    // ---- Output helpers ----
+
+    /// Register a new output with default per-output state.
+    pub fn register_output(&mut self, output: &Output) {
+        let name = output.name();
+        self.output_states.insert(name.clone(), OutputState::new());
+        if self.focused_output.is_none() {
+            self.focused_output = Some(name);
+        }
+    }
+
+    /// Get the Smithay Output object for the focused output.
+    pub fn get_focused_output(&self) -> Option<Output> {
+        self.focused_output.as_ref()
+            .and_then(|name| self.space.outputs().find(|o| o.name() == *name).cloned())
+    }
+
+    /// Get the focused output's active workspace number.
+    pub fn focused_workspace(&self) -> usize {
+        self.focused_output.as_ref()
+            .and_then(|name| self.output_states.get(name))
+            .map(|s| s.active_workspace)
+            .unwrap_or(1)
+    }
+
+    /// Find which output is currently showing a workspace.
+    pub fn output_for_workspace(&self, ws: usize) -> Option<Output> {
+        for (name, state) in &self.output_states {
+            if state.active_workspace == ws {
+                return self.space.outputs().find(|o| o.name() == *name).cloned();
+            }
+        }
+        None
+    }
+
+    /// Get the window list for a workspace (immutable).
+    pub fn ws_window_list(&self, ws: usize) -> &[WindowId] {
+        self.workspace_order.get(&ws).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// Get or create the window list for a workspace (mutable).
+    pub fn ws_window_list_mut(&mut self, ws: usize) -> &mut Vec<WindowId> {
+        self.workspace_order.entry(ws).or_default()
+    }
+
+    /// Retile all outputs.
+    pub fn retile_all(&mut self) {
+        let outputs: Vec<Output> = self.space.outputs().cloned().collect();
+        for output in outputs {
+            self.retile(&output);
+        }
+    }
+
+    // ---- Layout helpers (operate on focused output) ----
+
+    pub fn layout_name(&self) -> &str {
+        self.focused_output.as_ref()
+            .and_then(|name| self.output_states.get(name))
+            .map(|s| s.layout.name())
+            .unwrap_or("column")
+    }
+
+    pub fn grow_master(&mut self) -> bool {
+        self.focused_output.clone()
+            .and_then(|name| self.output_states.get_mut(&name))
+            .map(|s| s.layout.grow_master())
+            .unwrap_or(false)
+    }
+
+    pub fn shrink_master(&mut self) -> bool {
+        self.focused_output.clone()
+            .and_then(|name| self.output_states.get_mut(&name))
+            .map(|s| s.layout.shrink_master())
+            .unwrap_or(false)
+    }
+
+    pub fn master_ratio(&self) -> Option<f64> {
+        self.focused_output.as_ref()
+            .and_then(|name| self.output_states.get(name))
+            .and_then(|s| s.layout.master_ratio())
+    }
+
+    pub fn set_layout_gap(&mut self, gap: i32) -> bool {
+        self.focused_output.clone()
+            .and_then(|name| self.output_states.get_mut(&name))
+            .map(|s| s.layout.set_gap(gap))
+            .unwrap_or(false)
+    }
+
+    pub fn set_focused_layout(&mut self, layout: Box<dyn Layout>) {
+        if let Some(ref name) = self.focused_output {
+            if let Some(state) = self.output_states.get_mut(name) {
+                state.layout = layout;
+            }
+        }
+    }
+
+    // ---- Background helpers ----
+
+    pub fn background_for_output(&self, output: &Output) -> &Background {
+        static DEFAULT: Background = Background::Solid([0.1, 0.1, 0.1, 1.0]);
+        self.output_states.get(&output.name())
+            .map(|s| &s.background)
+            .unwrap_or(&DEFAULT)
+    }
+
+    pub fn set_background(&mut self, bg: Background) {
+        if let Some(ref name) = self.focused_output {
+            if let Some(state) = self.output_states.get_mut(name) {
+                state.background = bg;
+            }
+        }
+    }
+
+    // ---- Event system ----
 
     /// Broadcast an IPC event to all subscribed clients.
     /// Removes disconnected subscribers automatically.
@@ -327,8 +459,7 @@ impl DinatorState {
                 PluginAction::SetLayout { name } => {
                     info!(layout = %name, "plugin action: set_layout");
                     if self.set_layout(&name) {
-                        let output = self.space.outputs().next().cloned();
-                        if let Some(output) = output {
+                        if let Some(output) = self.get_focused_output() {
                             self.retile(&output);
                         }
                     }
@@ -369,29 +500,33 @@ impl DinatorState {
         })
     }
 
-    /// Switch to a workspace (1-9).
+    // ---- Workspace management ----
+
+    /// Switch to a workspace (1-9) on the focused output.
     pub fn switch_workspace(&mut self, workspace: usize) {
-        if workspace < 1 || workspace > 9 || workspace == self.active_workspace {
+        let Some(output) = self.get_focused_output() else { return };
+        let output_name = output.name();
+        let current_ws = self.output_states.get(&output_name)
+            .map(|s| s.active_workspace)
+            .unwrap_or(1);
+
+        if workspace < 1 || workspace > 9 || workspace == current_ws {
             return;
         }
 
-        info!(from = self.active_workspace, to = workspace, "switching workspace");
+        info!(from = current_ws, to = workspace, "switching workspace");
 
-        // Save current focus
+        // Save current focus for old workspace
         let current_focus = self
             .seat
             .get_keyboard()
             .and_then(|kb| kb.current_focus())
             .and_then(|s| self.surface_to_id.get(&s).copied());
-        self.workspace_focus
-            .insert(self.active_workspace, current_focus);
+        self.workspace_focus.insert(current_ws, current_focus);
 
-        // Save current window_order to workspace_order
-        self.workspace_order
-            .insert(self.active_workspace, self.window_order.clone());
-
-        // Unmap all current workspace windows from Space
-        for &id in &self.window_order {
+        // Unmap old workspace windows from Space
+        let old_windows = self.workspace_order.get(&current_ws).cloned().unwrap_or_default();
+        for &id in &old_windows {
             if let Some(window) = self.window_map.get(&id) {
                 self.space.unmap_elem(window);
             }
@@ -403,21 +538,13 @@ impl DinatorState {
             keyboard.set_focus(self, Option::<WlSurface>::None, serial);
         }
 
-        // Switch to new workspace
-        self.active_workspace = workspace;
-
-        // Restore window_order from workspace_order
-        self.window_order = self
-            .workspace_order
-            .get(&workspace)
-            .cloned()
-            .unwrap_or_default();
-
-        // Map and retile
-        let output = self.space.outputs().next().cloned();
-        if let Some(ref output) = output {
-            self.retile(output);
+        // Switch workspace on this output
+        if let Some(output_state) = self.output_states.get_mut(&output_name) {
+            output_state.active_workspace = workspace;
         }
+
+        // Map and retile new workspace
+        self.retile(&output);
 
         // Restore focus
         let saved_focus = self
@@ -425,7 +552,8 @@ impl DinatorState {
             .get(&workspace)
             .copied()
             .flatten();
-        let focus_id = saved_focus.or_else(|| self.window_order.last().copied());
+        let new_windows = self.workspace_order.get(&workspace).cloned().unwrap_or_default();
+        let focus_id = saved_focus.or_else(|| new_windows.last().copied());
         if let Some(id) = focus_id {
             if let Some(window) = self.window_map.get(&id) {
                 let window = window.clone();
@@ -444,7 +572,8 @@ impl DinatorState {
 
     /// Move the focused window to a workspace (1-9).
     pub fn move_to_workspace(&mut self, workspace: usize) {
-        if workspace < 1 || workspace > 9 || workspace == self.active_workspace {
+        let current_ws = self.focused_workspace();
+        if workspace < 1 || workspace > 9 || workspace == current_ws {
             return;
         }
 
@@ -457,28 +586,27 @@ impl DinatorState {
         // Update workspace assignment
         self.window_workspace.insert(id, workspace);
 
-        // Remove from current window_order (active workspace)
-        self.window_order.retain(|w| *w != id);
+        // Remove from current workspace's order
+        if let Some(order) = self.workspace_order.get_mut(&current_ws) {
+            order.retain(|w| *w != id);
+        }
 
         // Add to target workspace's order
-        self.workspace_order
-            .entry(workspace)
-            .or_default()
-            .push(id);
+        self.workspace_order.entry(workspace).or_default().push(id);
 
-        // Unmap from Space
+        // Unmap from Space (it's leaving the visible workspace)
         if let Some(window) = self.window_map.get(&id) {
             self.space.unmap_elem(window);
         }
 
-        // Retile remaining windows
-        let output = self.space.outputs().next().cloned();
-        if let Some(ref output) = output {
-            self.retile(output);
+        // Retile the focused output
+        if let Some(output) = self.get_focused_output() {
+            self.retile(&output);
         }
 
         // Focus next window on current workspace
-        if let Some(&next_id) = self.window_order.last() {
+        let ws_windows = self.ws_window_list(current_ws).to_vec();
+        if let Some(&next_id) = ws_windows.last() {
             if let Some(window) = self.window_map.get(&next_id) {
                 if let Some(surface) = Self::window_wl_surface(window) {
                     let serial = smithay::utils::SERIAL_COUNTER.next_serial();
@@ -496,11 +624,19 @@ impl DinatorState {
         });
     }
 
+    // ---- Tiling ----
+
     /// Re-tile all windows on the given output.
+    /// Uses the output's active workspace and layout.
     /// Floating and fullscreen windows are excluded from the tiling layout.
     pub fn retile(&mut self, output: &Output) {
-        let geo = self.space.output_geometry(output);
-        let Some(geo) = geo else { return };
+        let output_name = output.name();
+
+        let (ws, geo) = {
+            let Some(output_state) = self.output_states.get(&output_name) else { return };
+            let Some(geo) = self.space.output_geometry(output) else { return };
+            (output_state.active_workspace, geo)
+        };
 
         let area = Rect {
             x: geo.loc.x,
@@ -509,15 +645,18 @@ impl DinatorState {
             height: geo.size.h,
         };
 
+        let ws_windows = self.workspace_order.get(&ws).cloned().unwrap_or_default();
+
         // Only tile windows that are not floating or fullscreen
-        let tiled_windows: Vec<WindowId> = self
-            .window_order
+        let tiled_windows: Vec<WindowId> = ws_windows
             .iter()
             .copied()
             .filter(|id| !self.floating.contains(id) && !self.fullscreen.contains(id))
             .collect();
 
-        let placements = self.layout.arrange(&tiled_windows, area);
+        let placements = self.output_states.get(&output_name)
+            .map(|s| s.layout.arrange(&tiled_windows, area))
+            .unwrap_or_default();
 
         for placement in placements {
             if let Some(window) = self.window_map.get(&placement.id) {
@@ -542,8 +681,12 @@ impl DinatorState {
             }
         }
 
-        // Fullscreen windows fill the entire output
-        for &id in &self.fullscreen {
+        // Fullscreen windows fill the entire output (only for this workspace)
+        let fullscreen_on_ws: Vec<WindowId> = self.fullscreen.iter()
+            .filter(|id| ws_windows.contains(id))
+            .copied()
+            .collect();
+        for id in fullscreen_on_ws {
             if let Some(window) = self.window_map.get(&id) {
                 self.space.map_element(window.clone(), (geo.loc.x, geo.loc.y), false);
                 if let Some(toplevel) = window.toplevel() {
@@ -566,38 +709,29 @@ impl DinatorState {
         }
     }
 
-    /// Set the tiling layout by name. Returns true if changed.
+    /// Set the tiling layout by name on the focused output. Returns true if changed.
     /// Checks built-in layouts first, then plugin-provided layouts.
     pub fn set_layout(&mut self, name: &str) -> bool {
-        match name {
-            "column" => {
-                self.layout = Box::new(ColumnLayout::default());
-                return true;
+        let new_layout: Option<Box<dyn Layout>> = match name {
+            "column" => Some(Box::new(ColumnLayout::default())),
+            "monocle" => Some(Box::new(MonocleLayout::default())),
+            "dwindle" => Some(Box::new(DwindleLayout::default())),
+            "centered" => Some(Box::new(CenteredMasterLayout::default())),
+            _ => {
+                if let Some(ref mut runtime) = self.plugin_runtime {
+                    runtime.create_layout(name)
+                } else {
+                    None
+                }
             }
-            "monocle" => {
-                self.layout = Box::new(MonocleLayout::default());
-                return true;
-            }
-            "dwindle" => {
-                self.layout = Box::new(DwindleLayout::default());
-                return true;
-            }
-            "centered" => {
-                self.layout = Box::new(CenteredMasterLayout::default());
-                return true;
-            }
-            _ => {}
-        }
+        };
 
-        // Check plugin layouts
-        if let Some(ref mut runtime) = self.plugin_runtime {
-            if let Some(layout) = runtime.create_layout(name) {
-                self.layout = layout;
-                return true;
-            }
+        if let Some(layout) = new_layout {
+            self.set_focused_layout(layout);
+            true
+        } else {
+            false
         }
-
-        false
     }
 
     /// List all available layout names (built-in + plugin-provided).
@@ -613,6 +747,8 @@ impl DinatorState {
         }
         names
     }
+
+    // ---- Window state toggles ----
 
     /// Toggle the focused window between floating and tiled.
     pub fn toggle_float(&mut self) -> Option<(WindowId, bool)> {
@@ -630,7 +766,7 @@ impl DinatorState {
             true
         };
 
-        let output = self.space.outputs().next().cloned();
+        let output = self.get_focused_output();
         if let Some(output) = output {
             if !is_floating {
                 // Returning to tiled: retile will place it
@@ -683,8 +819,7 @@ impl DinatorState {
             true
         };
 
-        let output = self.space.outputs().next().cloned();
-        if let Some(output) = output {
+        if let Some(output) = self.get_focused_output() {
             self.retile(&output);
         }
 
@@ -728,7 +863,9 @@ impl DinatorState {
 
     /// Swap the focused window with the master (first) position.
     pub fn swap_master(&mut self) {
-        if self.window_order.len() < 2 {
+        let ws = self.focused_workspace();
+        let ws_len = self.ws_window_list(ws).len();
+        if ws_len < 2 {
             return;
         }
 
@@ -738,13 +875,12 @@ impl DinatorState {
         let focused_idx = current_focus
             .as_ref()
             .and_then(|surface| self.surface_to_id.get(surface))
-            .and_then(|id| self.window_order.iter().position(|w| w == id));
+            .and_then(|id| self.ws_window_list(ws).iter().position(|w| w == id));
 
         if let Some(idx) = focused_idx {
             if idx != 0 {
-                self.window_order.swap(0, idx);
-                let output = self.space.outputs().next().cloned();
-                if let Some(output) = output {
+                self.ws_window_list_mut(ws).swap(0, idx);
+                if let Some(output) = self.get_focused_output() {
                     self.retile(&output);
                 }
             }
@@ -752,7 +888,9 @@ impl DinatorState {
     }
 
     fn focus_cycle(&mut self, direction: i32) {
-        if self.window_order.len() < 2 {
+        let ws = self.focused_workspace();
+        let ws_windows = self.ws_window_list(ws).to_vec();
+        if ws_windows.len() < 2 {
             return;
         }
 
@@ -762,12 +900,12 @@ impl DinatorState {
         let current_idx = current_focus
             .as_ref()
             .and_then(|surface| self.surface_to_id.get(surface))
-            .and_then(|id| self.window_order.iter().position(|w| w == id))
+            .and_then(|id| ws_windows.iter().position(|w| w == id))
             .unwrap_or(0);
 
-        let len = self.window_order.len() as i32;
+        let len = ws_windows.len() as i32;
         let next_idx = ((current_idx as i32 + direction).rem_euclid(len)) as usize;
-        let next_id = self.window_order[next_idx];
+        let next_id = ws_windows[next_idx];
 
         if let Some(window) = self.window_map.get(&next_id) {
             let window = window.clone();
