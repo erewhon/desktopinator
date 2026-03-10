@@ -137,6 +137,46 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
             }
             Ok(IpcCommand::SetBackground { spec: args[1].clone() })
         }
+        "output" => {
+            if args.len() < 2 {
+                anyhow::bail!("usage: dinatorctl output <create|remove|list|focus|move-to> [args...]");
+            }
+            match args[1].as_str() {
+                "create" => {
+                    if args.len() != 4 {
+                        anyhow::bail!("usage: dinatorctl output create NAME WIDTHxHEIGHT");
+                    }
+                    let name = args[2].clone();
+                    let parts: Vec<&str> = args[3].split('x').collect();
+                    if parts.len() != 2 {
+                        anyhow::bail!("resolution must be WIDTHxHEIGHT (e.g. 1920x1080)");
+                    }
+                    let width: u16 = parts[0].parse().context("invalid width")?;
+                    let height: u16 = parts[1].parse().context("invalid height")?;
+                    Ok(IpcCommand::CreateOutput { name, width, height })
+                }
+                "remove" | "rm" => {
+                    if args.len() != 3 {
+                        anyhow::bail!("usage: dinatorctl output remove NAME");
+                    }
+                    Ok(IpcCommand::RemoveOutput { name: args[2].clone() })
+                }
+                "list" | "ls" => Ok(IpcCommand::ListOutputs),
+                "focus" => {
+                    if args.len() != 3 {
+                        anyhow::bail!("usage: dinatorctl output focus NAME");
+                    }
+                    Ok(IpcCommand::FocusOutput { name: args[2].clone() })
+                }
+                "move-to" | "move" => {
+                    if args.len() != 3 {
+                        anyhow::bail!("usage: dinatorctl output move-to NAME");
+                    }
+                    Ok(IpcCommand::MoveWindowToOutput { name: args[2].clone() })
+                }
+                sub => anyhow::bail!("unknown output subcommand: {sub}\n\nSubcommands: create, remove, list, focus, move-to"),
+            }
+        }
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
@@ -173,6 +213,11 @@ COMMANDS:
     subscribe            Stream compositor events (JSON lines)
     gap PIXELS           Set gap/gutter between windows (e.g. 0, 4, 10)
     background SPEC      Set background (#RRGGBB, r,g,b, or gradient COLOR-COLOR)
+    output create NAME WxH  Create a new headless output
+    output remove NAME      Remove a headless output
+    output list             List all outputs
+    output focus NAME       Focus an output (receives keyboard input)
+    output move-to NAME     Move focused window to an output
     quit                 Quit the compositor"
     );
 }

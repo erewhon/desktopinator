@@ -2389,6 +2389,137 @@ fn handle_ipc_command(
                 },
             }
         }
+        IpcCommand::CreateOutput { name, width, height } => {
+            info!(name = %name, width, height, "IPC: create-output");
+            // Check if output already exists
+            if state.output_states.contains_key(name.as_str()) {
+                return IpcResponse::Error {
+                    message: format!("output '{name}' already exists"),
+                };
+            }
+
+            let mode = Mode {
+                size: (*width as i32, *height as i32).into(),
+                refresh: 60_000,
+            };
+            let new_output = Output::new(
+                name.clone(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "desktopinator".into(),
+                    model: "headless".into(),
+                },
+            );
+            new_output.change_current_state(
+                Some(mode),
+                Some(Transform::Normal),
+                None,
+                None, // position will be set below
+            );
+            new_output.set_preferred(mode);
+
+            // Position to the right of the last output
+            let x_offset: i32 = state.space.outputs()
+                .filter_map(|o| state.space.output_geometry(o))
+                .map(|geo| geo.loc.x + geo.size.w)
+                .max()
+                .unwrap_or(0);
+
+            new_output.create_global::<DinatorState>(&state.display_handle);
+            state.space.map_output(&new_output, (x_offset, 0));
+            state.register_output(&new_output);
+
+            state.emit_event(dinator_ipc::IpcEvent::OutputCreated {
+                name: name.clone(),
+                width: *width,
+                height: *height,
+            });
+
+            IpcResponse::Ok {
+                message: Some(format!("created output '{name}' ({width}x{height})")),
+            }
+        }
+        IpcCommand::RemoveOutput { name } => {
+            info!(name = %name, "IPC: remove-output");
+
+            if !state.output_states.contains_key(name.as_str()) {
+                return IpcResponse::Error {
+                    message: format!("output '{name}' not found"),
+                };
+            }
+
+            // Don't allow removing the last output
+            if state.output_states.len() <= 1 {
+                return IpcResponse::Error {
+                    message: "cannot remove the last output".to_string(),
+                };
+            }
+
+            let output = state.space.outputs()
+                .find(|o| o.name() == *name)
+                .cloned();
+
+            if let Some(output) = output {
+                state.unregister_output(&output);
+                state.emit_event(dinator_ipc::IpcEvent::OutputRemoved { name: name.clone() });
+                IpcResponse::Ok {
+                    message: Some(format!("removed output '{name}'")),
+                }
+            } else {
+                IpcResponse::Error {
+                    message: format!("output '{name}' not found in space"),
+                }
+            }
+        }
+        IpcCommand::ListOutputs => {
+            let focused = state.focused_output.clone().unwrap_or_default();
+            let data: Vec<serde_json::Value> = state.space.outputs()
+                .map(|o| {
+                    let name = o.name();
+                    let geo = state.space.output_geometry(o);
+                    let os = state.output_states.get(&name);
+                    serde_json::json!({
+                        "name": name,
+                        "width": geo.map(|g| g.size.w).unwrap_or(0),
+                        "height": geo.map(|g| g.size.h).unwrap_or(0),
+                        "x": geo.map(|g| g.loc.x).unwrap_or(0),
+                        "y": geo.map(|g| g.loc.y).unwrap_or(0),
+                        "workspace": os.map(|s| s.active_workspace).unwrap_or(1),
+                        "layout": os.map(|s| s.layout.name()).unwrap_or("column"),
+                        "focused": name == focused,
+                    })
+                })
+                .collect();
+            IpcResponse::Data {
+                data: serde_json::Value::Array(data),
+            }
+        }
+        IpcCommand::FocusOutput { name } => {
+            info!(name = %name, "IPC: focus-output");
+            if !state.output_states.contains_key(name.as_str()) {
+                return IpcResponse::Error {
+                    message: format!("output '{name}' not found"),
+                };
+            }
+            state.focus_output(name);
+            state.emit_event(dinator_ipc::IpcEvent::OutputFocused { name: name.clone() });
+            IpcResponse::Ok {
+                message: Some(format!("focused output '{name}'")),
+            }
+        }
+        IpcCommand::MoveWindowToOutput { name } => {
+            info!(name = %name, "IPC: move-window-to-output");
+            if state.move_window_to_output(name) {
+                IpcResponse::Ok {
+                    message: Some(format!("moved window to output '{name}'")),
+                }
+            } else {
+                IpcResponse::Error {
+                    message: format!("failed to move window to output '{name}' (no focused window or output not found)"),
+                }
+            }
+        }
         IpcCommand::Subscribe => {
             // Subscribe is handled in the IPC server thread, not here.
             // If we get here, something is wrong.

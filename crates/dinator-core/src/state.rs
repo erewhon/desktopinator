@@ -293,6 +293,88 @@ impl DinatorState {
         }
     }
 
+    /// Unregister an output and clean up per-output state.
+    /// Windows on the removed output's workspace are NOT removed, just unmapped from Space.
+    pub fn unregister_output(&mut self, output: &Output) {
+        let name = output.name();
+
+        // Unmap windows on this output's workspace from Space
+        if let Some(os) = self.output_states.get(&name) {
+            let ws = os.active_workspace;
+            let ids = self.workspace_order.get(&ws).cloned().unwrap_or_default();
+            for id in &ids {
+                if let Some(window) = self.window_map.get(id) {
+                    self.space.unmap_elem(window);
+                }
+            }
+        }
+
+        self.output_states.remove(&name);
+        self.space.unmap_output(output);
+
+        // If this was the focused output, pick another
+        if self.focused_output.as_deref() == Some(&name) {
+            self.focused_output = self.space.outputs().next().map(|o| o.name());
+        }
+    }
+
+    /// Focus an output by name.
+    pub fn focus_output(&mut self, name: &str) {
+        if self.output_states.contains_key(name) {
+            self.focused_output = Some(name.to_string());
+        }
+    }
+
+    /// Move the focused window to a different output.
+    /// The window is moved to that output's active workspace.
+    pub fn move_window_to_output(&mut self, target_output_name: &str) -> bool {
+        let Some(keyboard) = self.seat.get_keyboard() else { return false };
+        let Some(surface) = keyboard.current_focus() else { return false };
+        let Some(&id) = self.surface_to_id.get(&surface) else { return false };
+
+        let target_ws = match self.output_states.get(target_output_name) {
+            Some(os) => os.active_workspace,
+            None => return false,
+        };
+
+        let current_ws = self.window_workspace.get(&id).copied().unwrap_or(1);
+        if current_ws == target_ws {
+            return false;
+        }
+
+        info!(window = id.0, from_ws = current_ws, to_ws = target_ws, target = target_output_name, "moving window to output");
+
+        // Update workspace assignment
+        self.window_workspace.insert(id, target_ws);
+
+        // Remove from current workspace's order
+        if let Some(order) = self.workspace_order.get_mut(&current_ws) {
+            order.retain(|w| *w != id);
+        }
+
+        // Add to target workspace's order
+        self.workspace_order.entry(target_ws).or_default().push(id);
+
+        // Unmap from Space, then retile both workspaces
+        if let Some(window) = self.window_map.get(&id) {
+            self.space.unmap_elem(window);
+        }
+
+        if let Some(output) = self.output_for_workspace(current_ws) {
+            self.retile(&output);
+        }
+        if let Some(output) = self.output_for_workspace(target_ws) {
+            self.retile(&output);
+        }
+
+        self.emit_event(IpcEvent::WindowMovedWorkspace {
+            id: id.0,
+            workspace: target_ws,
+        });
+
+        true
+    }
+
     /// Get the Smithay Output object for the focused output.
     pub fn get_focused_output(&self) -> Option<Output> {
         self.focused_output.as_ref()

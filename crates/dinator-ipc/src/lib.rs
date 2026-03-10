@@ -53,6 +53,20 @@ pub enum IpcCommand {
     SetBackground { spec: String },
     /// Set the gap (gutter) between windows in pixels.
     SetGap { pixels: i32 },
+    /// Create a new headless output with the given dimensions.
+    CreateOutput {
+        name: String,
+        width: u16,
+        height: u16,
+    },
+    /// Remove a headless output by name.
+    RemoveOutput { name: String },
+    /// List all outputs.
+    ListOutputs,
+    /// Focus an output by name (it receives keyboard input).
+    FocusOutput { name: String },
+    /// Move the focused window to a different output.
+    MoveWindowToOutput { name: String },
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,
@@ -82,6 +96,12 @@ pub enum IpcEvent {
     WorkspaceChanged { workspace: usize },
     /// A window was moved to a different workspace.
     WindowMovedWorkspace { id: u64, workspace: usize },
+    /// A new output was created.
+    OutputCreated { name: String, width: u16, height: u16 },
+    /// An output was removed.
+    OutputRemoved { name: String },
+    /// An output gained focus.
+    OutputFocused { name: String },
 }
 
 /// A response from the compositor back to dinatorctl.
