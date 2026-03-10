@@ -3,6 +3,7 @@ mod clipboard;
 mod gfx;
 mod ipc;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -479,7 +480,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
 
     info!("headless GlesRenderer initialized");
 
-    let mut renderbuffer: GlesRenderbuffer = renderer
+    let renderbuffer: GlesRenderbuffer = renderer
         .create_buffer(Fourcc::Abgr8888, Size::from((width as i32, height as i32)))
         .map_err(|e| anyhow::anyhow!("failed to create renderbuffer: {e:?}"))?;
 
@@ -1415,10 +1416,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
         }})
         .map_err(|e| anyhow::anyhow!("failed to insert RDP input source: {e}"))?;
 
-    let mut damage_tracker = OutputDamageTracker::from_output(&output);
-    let output_for_render = output.clone();
-    let mut current_width = width;
-    let mut current_height = height;
+    // Per-output render state: renderbuffer + damage tracker
+    let mut output_render_states: HashMap<String, (GlesRenderbuffer, OutputDamageTracker)> = HashMap::new();
+    output_render_states.insert(output.name(), (renderbuffer, OutputDamageTracker::from_output(&output)));
+    let mut composite_width = width;
+    let mut composite_height = height;
+    let mut composite_buffer: Vec<u8> = vec![0u8; width as usize * height as usize * 4];
     let pending_resize_render = pending_resize.clone();
 
     // H.264 encoder — selected via --encoder flag
@@ -1474,7 +1477,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     event_loop
         .handle()
         .insert_source(timer, move |_, _, state| {
-            let output = &output_for_render;
+            // Collect current outputs
+            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
 
             // Check for new RDP clipboard text → set as Wayland clipboard
             {
@@ -1483,7 +1487,6 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     if let Some(text) = cs.rdp_text.take() {
                         cs.rdp_owns_clipboard = false;
                         state.rdp_clipboard_text = Some(text);
-                        // Set compositor selection so Wayland apps can paste
                         smithay::wayland::selection::data_device::set_data_device_selection(
                             &state.display.handle(),
                             &state.seat,
@@ -1500,278 +1503,322 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 }
             }
 
-            // Check for pending resolution change
+            // Sync per-output render state with current outputs
+            for o in &outputs {
+                let name = o.name();
+                if !output_render_states.contains_key(&name) {
+                    if let Some(geo) = state.space.output_geometry(o) {
+                        match renderer.create_buffer(Fourcc::Abgr8888, Size::from((geo.size.w, geo.size.h))) {
+                            Ok(rb) => {
+                                let dt = OutputDamageTracker::from_output(o);
+                                output_render_states.insert(name.clone(), (rb, dt));
+                                info!(output = %name, w = geo.size.w, h = geo.size.h, "created renderbuffer for new output");
+                            }
+                            Err(e) => {
+                                tracing::error!(output = %name, "failed to create renderbuffer: {e:?}");
+                            }
+                        }
+                    }
+                }
+            }
+            // Remove render state for removed outputs
+            let live_names: Vec<String> = outputs.iter().map(|o| o.name()).collect();
+            output_render_states.retain(|name, _| live_names.contains(name));
+
+            // Check for pending resolution change (applies to focused output)
             if let Some((new_w, new_h)) = pending_resize_render.lock().unwrap().take() {
-                if new_w != current_width || new_h != current_height {
-                    info!(
-                        old_w = current_width,
-                        old_h = current_height,
-                        new_w,
-                        new_h,
-                        "applying resolution change"
-                    );
+                if let Some(focused) = state.get_focused_output() {
+                    let name = focused.name();
+                    info!(output = %name, new_w, new_h, "applying resolution change");
 
-                    // Create new renderbuffer
-                    match renderer
-                        .create_buffer(Fourcc::Abgr8888, Size::from((new_w as i32, new_h as i32)))
-                    {
+                    let mode = Mode {
+                        size: (new_w as i32, new_h as i32).into(),
+                        refresh: 60_000,
+                    };
+                    focused.change_current_state(Some(mode), None, None, None);
+                    focused.set_preferred(mode);
+
+                    // Recreate renderbuffer for this output
+                    match renderer.create_buffer(Fourcc::Abgr8888, Size::from((new_w as i32, new_h as i32))) {
                         Ok(new_rb) => {
-                            renderbuffer = new_rb;
-                            current_width = new_w;
-                            current_height = new_h;
-
-                            // Update output mode
-                            let mode = Mode {
-                                size: (new_w as i32, new_h as i32).into(),
-                                refresh: 60_000,
-                            };
-                            output.change_current_state(Some(mode), None, None, None);
-                            output.set_preferred(mode);
-
-                            // Reset damage tracker for new size
-                            damage_tracker = OutputDamageTracker::from_output(output);
-
-                            // Re-tile windows for new resolution
-                            state.retile(output);
-
-                            // Tell VNC to resize its framebuffer
-                            let _ = vnc_resize_tx.try_send((new_w, new_h));
-
-                            // Update RDP dimensions and send resize event
-                            rdp_width_render.store(new_w, std::sync::atomic::Ordering::Relaxed);
-                            rdp_height_render.store(new_h, std::sync::atomic::Ordering::Relaxed);
-                            // Send a resize display update to connected RDP clients
-                            if let Ok(guard) = rdp_update_tx_render.try_lock() {
-                                if let Some(ref tx) = *guard {
-                                    let _ = tx.try_send(ironrdp_server::DisplayUpdate::Resize(
-                                        ironrdp_server::DesktopSize {
-                                            width: new_w,
-                                            height: new_h,
-                                        },
-                                    ));
-                                }
-                            }
-
-                            // Reset GFX surface at new dimensions and force keyframe
-                            {
-                                let mut gfx = gfx_state_render.lock().unwrap();
-                                if gfx.ready {
-                                    gfx.width = new_w;
-                                    gfx.height = new_h;
-                                    if let Some(channel_id) = gfx.channel_id {
-                                        match gfx::build_reset_surface_pdus(new_w, new_h) {
-                                            Ok(data) => {
-                                                if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
-                                                    let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
-                                                        channel_id,
-                                                        data,
-                                                    });
-                                                    info!(width = new_w, height = new_h, "GFX: sent surface reset for resize");
-                                                }
-                                            }
-                                            Err(e) => tracing::warn!(error = %e, "GFX: failed to build reset PDUs"),
-                                        }
-                                    }
-                                    // Force damage + keyframe so client gets a fresh frame
-                                    damage_tracker = OutputDamageTracker::from_output(output);
-                                    if let Some(ref mut enc) = h264_encoder {
-                                        enc.force_keyframe();
-                                    }
-                                }
-                            }
-
-                            info!(
-                                width = new_w,
-                                height = new_h,
-                                "resolution change applied"
-                            );
-
-                            state.emit_event(dinator_ipc::IpcEvent::ResolutionChanged {
-                                width: new_w,
-                                height: new_h,
-                            });
+                            let dt = OutputDamageTracker::from_output(&focused);
+                            output_render_states.insert(name, (new_rb, dt));
                         }
                         Err(e) => {
-                            tracing::error!("failed to create new renderbuffer: {e:?}");
+                            tracing::error!("failed to create renderbuffer for resize: {e:?}");
                         }
                     }
+
+                    state.retile(&focused);
                 }
             }
 
-            // Render to offscreen buffer
-            match renderer.bind(&mut renderbuffer) {
-                Ok(mut target) => {
-                    let has_damage = if let Some(elements) = build_render_elements(&mut renderer, state, output) {
-                        match damage_tracker.render_output(
-                            &mut renderer,
-                            &mut target,
-                            0,
-                            &elements,
-                            background_clear_color(state.background_for_output(output)),
-                        ) {
-                            Ok(result) => result.damage.is_some_and(|d| !d.is_empty()),
-                            Err(_) => false,
-                        }
-                    } else {
-                        false
-                    };
+            // Calculate composite dimensions (bounding box of all outputs)
+            let (new_cw, new_ch) = {
+                let mut max_x = 0i32;
+                let mut max_y = 0i32;
+                for o in &outputs {
+                    if let Some(geo) = state.space.output_geometry(o) {
+                        max_x = max_x.max(geo.loc.x + geo.size.w);
+                        max_y = max_y.max(geo.loc.y + geo.size.h);
+                    }
+                }
+                (max_x.max(1) as u16, max_y.max(1) as u16)
+            };
 
-                    // Check for pending GFX response and send via ServerEvent::Dvc.
-                    // This runs every tick (not just on damage) so negotiation completes
-                    // even when the screen hasn't changed.
-                    {
-                        let mut gfx = gfx_state_render.lock().unwrap();
-                        if let Some(resp) = gfx.pending_response.take() {
-                            if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
-                                let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
-                                    channel_id: resp.channel_id,
-                                    data: resp.data,
-                                });
-                                gfx.ready = true;
-                                info!("GFX: sent negotiation response via ServerEvent::Dvc");
-                                // Force full damage on next render so the first GFX frame is sent
-                                damage_tracker = OutputDamageTracker::from_output(output);
-                                // Force H.264 keyframe so client can start decoding
-                                if let Some(ref mut enc) = h264_encoder {
-                                    enc.force_keyframe();
-                                    info!("GFX: forced H.264 keyframe for initial frame");
+            // Resize VNC/RDP/encoder if composite dimensions changed
+            if new_cw != composite_width || new_ch != composite_height {
+                info!(
+                    old_w = composite_width, old_h = composite_height,
+                    new_w = new_cw, new_h = new_ch,
+                    "composite dimensions changed"
+                );
+                composite_width = new_cw;
+                composite_height = new_ch;
+                composite_buffer = vec![0u8; composite_width as usize * composite_height as usize * 4];
+
+                let _ = vnc_resize_tx.try_send((composite_width, composite_height));
+
+                rdp_width_render.store(composite_width, std::sync::atomic::Ordering::Relaxed);
+                rdp_height_render.store(composite_height, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(guard) = rdp_update_tx_render.try_lock() {
+                    if let Some(ref tx) = *guard {
+                        let _ = tx.try_send(ironrdp_server::DisplayUpdate::Resize(
+                            ironrdp_server::DesktopSize {
+                                width: composite_width,
+                                height: composite_height,
+                            },
+                        ));
+                    }
+                }
+
+                // Reset GFX surface at new composite dimensions
+                {
+                    let mut gfx = gfx_state_render.lock().unwrap();
+                    if gfx.ready {
+                        gfx.width = composite_width;
+                        gfx.height = composite_height;
+                        if let Some(channel_id) = gfx.channel_id {
+                            match gfx::build_reset_surface_pdus(composite_width, composite_height) {
+                                Ok(data) => {
+                                    if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
+                                        let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
+                                            channel_id,
+                                            data,
+                                        });
+                                        info!(width = composite_width, height = composite_height, "GFX: sent surface reset for composite resize");
+                                    }
                                 }
+                                Err(e) => tracing::warn!(error = %e, "GFX: failed to build reset PDUs"),
                             }
                         }
+                        if let Some(ref mut enc) = h264_encoder {
+                            enc.force_keyframe();
+                        }
                     }
+                }
 
-                    // Only export pixels when the screen actually changed
-                    if has_damage {
-                        let region = Rectangle::from_size(
-                            Size::from((current_width as i32, current_height as i32)),
-                        );
-                        if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
-                            if let Ok(pixels) = renderer.map_texture(&mapping) {
-                                // GL readback gives RGBA bytes but VNC/RDP expect BGRA —
-                                // swap R and B channels in-place.
-                                let mut frame = pixels.to_vec();
-                                for chunk in frame.chunks_exact_mut(4) {
-                                    chunk.swap(0, 2); // R <-> B
-                                }
-                                let _ = pixel_tx.try_send(frame.clone());
+                state.emit_event(dinator_ipc::IpcEvent::ResolutionChanged {
+                    width: composite_width,
+                    height: composite_height,
+                });
+            }
 
-                                // Encode frame as H.264 and send via GFX if ready
-                                if let Some(ref mut encoder) = h264_encoder {
-                                    let t0 = std::time::Instant::now();
-                                    match encoder.encode(&frame, current_width as u32, current_height as u32) {
-                                        Ok(Some(encoded)) => {
-                                            encode_frame_count += 1;
-                                            let elapsed = t0.elapsed();
-                                            if encode_frame_count % 60 == 1 {
-                                                info!(
-                                                    encoder = encoder.name(),
-                                                    frame = encode_frame_count,
-                                                    bytes = encoded.data.len(),
-                                                    keyframe = encoded.is_keyframe,
-                                                    encode_ms = elapsed.as_secs_f64() * 1000.0,
-                                                    "H.264 encode"
-                                                );
-                                            }
+            // Render each output to its renderbuffer
+            let mut any_damage = false;
+            for o in &outputs {
+                let name = o.name();
+                let Some((ref mut rb, ref mut dt)) = output_render_states.get_mut(&name) else { continue };
+                let Some(geo) = state.space.output_geometry(o) else { continue };
+                let ow = geo.size.w as u16;
+                let oh = geo.size.h as u16;
 
-                                            // Send H.264 via GFX DVC channel if negotiated
-                                            let gfx = gfx_state_render.lock().unwrap();
-                                            if gfx.ready {
-                                                if let Some(channel_id) = gfx.channel_id {
-                                                    let frame_id = gfx.next_frame_id;
-                                                    drop(gfx); // release lock before encoding
+                match renderer.bind(rb) {
+                    Ok(mut target) => {
+                        let has_damage = if let Some(elements) = build_render_elements(&mut renderer, state, o) {
+                            match dt.render_output(
+                                &mut renderer,
+                                &mut target,
+                                0,
+                                &elements,
+                                background_clear_color(state.background_for_output(o)),
+                            ) {
+                                Ok(result) => result.damage.is_some_and(|d| !d.is_empty()),
+                                Err(_) => false,
+                            }
+                        } else {
+                            false
+                        };
 
-                                                    let h264_len = encoded.data.len();
-
-                                                    // Max frame size the DVC channel can handle without
-                                                    // overwhelming the client (~50 DVC chunks of 1590 bytes).
-                                                    const MAX_GFX_FRAME_BYTES: usize = 80_000;
-
-                                                    // Skip truly empty P-frames (no visual change).
-                                                    if h264_len < 50 && !encoded.is_keyframe {
-                                                        // No visual change — skip
-                                                    } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
-                                                        // Frame too large for DVC — drop to prevent client disconnect.
-                                                        // Keyframes (connect/resize) are always sent.
-                                                        gfx_frames_dropped += 1;
-                                                        if gfx_frames_dropped <= 3 || gfx_frames_dropped % 30 == 0 {
-                                                            info!(
-                                                                frame_id,
-                                                                h264_bytes = h264_len,
-                                                                dropped = gfx_frames_dropped,
-                                                                "GFX: dropping oversized P-frame"
-                                                            );
-                                                        }
-                                                        gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
-                                                    } else {
-                                                    match gfx::encode_gfx_avc420_frame(
-                                                        &encoded.data,
-                                                        current_width as u16,
-                                                        current_height as u16,
-                                                        frame_id,
-                                                    ) {
-                                                        Ok(gfx_data) => {
-                                                            if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
-                                                                let is_large = gfx_data.len() > 50_000;
-                                                                if frame_id % 60 == 0 || frame_id <= 5 || encoded.is_keyframe || is_large {
-                                                                    info!(
-                                                                        frame_id,
-                                                                        h264_bytes = h264_len,
-                                                                        gfx_bytes = gfx_data.len(),
-                                                                        keyframe = encoded.is_keyframe,
-                                                                        "GFX: sending H.264 frame via DVC"
-                                                                    );
-                                                                }
-                                                                let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
-                                                                    channel_id,
-                                                                    data: gfx_data,
-                                                                });
-                                                                gfx_frames_dropped = 0; // reset drop counter on successful send
-                                                            }
-                                                            gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
-                                                        }
-                                                        Err(e) => {
-                                                            tracing::warn!(error = %e, "GFX frame encode failed");
-                                                        }
-                                                    }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        Ok(None) => {} // encoder buffered the frame
-                                        Err(e) => {
-                                            tracing::warn!(error = %e, "H.264 encode failed");
+                        if has_damage {
+                            any_damage = true;
+                            // Read pixels and blit into composite buffer
+                            let region = Rectangle::from_size(
+                                Size::from((ow as i32, oh as i32)),
+                            );
+                            if let Ok(mapping) = renderer.copy_framebuffer(&target, region, Fourcc::Abgr8888) {
+                                if let Ok(pixels) = renderer.map_texture(&mapping) {
+                                    let src: &[u8] = pixels.as_ref();
+                                    let ox = geo.loc.x as usize;
+                                    let oy = geo.loc.y as usize;
+                                    let row_bytes = ow as usize * 4;
+                                    let stride = composite_width as usize * 4;
+                                    for row in 0..oh as usize {
+                                        let src_start = row * row_bytes;
+                                        let dst_start = (oy + row) * stride + ox * 4;
+                                        if src_start + row_bytes <= src.len()
+                                            && dst_start + row_bytes <= composite_buffer.len()
+                                        {
+                                            composite_buffer[dst_start..dst_start + row_bytes]
+                                                .copy_from_slice(&src[src_start..src_start + row_bytes]);
                                         }
                                     }
                                 }
-
-                                // Send to RDP bitmap pipeline only if GFX is NOT active
-                                // (GFX and bitmap updates are mutually exclusive per MS-RDPEGFX)
-                                let gfx_active = gfx_state_render.lock().unwrap().ready;
-                                if !gfx_active {
-                                    let _ = rdp_pixel_tx.try_send(frame);
-                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::error!("failed to bind renderbuffer: {e:?}");
+                    Err(e) => {
+                        tracing::error!(output = %name, "failed to bind renderbuffer: {e:?}");
+                    }
                 }
             }
 
-            // Send frame callbacks to clients
-            state.space.elements().for_each(|window| {
-                window.send_frame(output, state.start_time.elapsed(), None, |_, _| {
-                    Some(output.clone())
-                });
-            });
-
-            // Send frame callbacks to layer surfaces
+            // Check for pending GFX response (runs every tick for negotiation)
             {
-                let layer_map = layer_map_for_output(output);
+                let mut gfx = gfx_state_render.lock().unwrap();
+                if let Some(resp) = gfx.pending_response.take() {
+                    if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
+                        let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
+                            channel_id: resp.channel_id,
+                            data: resp.data,
+                        });
+                        gfx.ready = true;
+                        info!("GFX: sent negotiation response via ServerEvent::Dvc");
+                        // Force full damage on next render — reset all damage trackers
+                        for o in &outputs {
+                            if let Some((_, ref mut dt)) = output_render_states.get_mut(&o.name()) {
+                                *dt = OutputDamageTracker::from_output(o);
+                            }
+                        }
+                        if let Some(ref mut enc) = h264_encoder {
+                            enc.force_keyframe();
+                            info!("GFX: forced H.264 keyframe for initial frame");
+                        }
+                    }
+                }
+            }
+
+            // Export composite pixels when any output had damage
+            if any_damage {
+                // R/B swap for VNC/RDP (RGBA→BGRA)
+                let mut frame = composite_buffer.clone();
+                for chunk in frame.chunks_exact_mut(4) {
+                    chunk.swap(0, 2);
+                }
+                let _ = pixel_tx.try_send(frame.clone());
+
+                // H.264 encode and send via GFX
+                if let Some(ref mut encoder) = h264_encoder {
+                    let t0 = std::time::Instant::now();
+                    match encoder.encode(&frame, composite_width as u32, composite_height as u32) {
+                        Ok(Some(encoded)) => {
+                            encode_frame_count += 1;
+                            let elapsed = t0.elapsed();
+                            if encode_frame_count % 60 == 1 {
+                                info!(
+                                    encoder = encoder.name(),
+                                    frame = encode_frame_count,
+                                    bytes = encoded.data.len(),
+                                    keyframe = encoded.is_keyframe,
+                                    encode_ms = elapsed.as_secs_f64() * 1000.0,
+                                    "H.264 encode"
+                                );
+                            }
+
+                            let gfx = gfx_state_render.lock().unwrap();
+                            if gfx.ready {
+                                if let Some(channel_id) = gfx.channel_id {
+                                    let frame_id = gfx.next_frame_id;
+                                    drop(gfx);
+
+                                    let h264_len = encoded.data.len();
+                                    const MAX_GFX_FRAME_BYTES: usize = 80_000;
+
+                                    if h264_len < 50 && !encoded.is_keyframe {
+                                        // No visual change — skip
+                                    } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
+                                        gfx_frames_dropped += 1;
+                                        if gfx_frames_dropped <= 3 || gfx_frames_dropped % 30 == 0 {
+                                            info!(
+                                                frame_id,
+                                                h264_bytes = h264_len,
+                                                dropped = gfx_frames_dropped,
+                                                "GFX: dropping oversized P-frame"
+                                            );
+                                        }
+                                        gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
+                                    } else {
+                                        match gfx::encode_gfx_avc420_frame(
+                                            &encoded.data,
+                                            composite_width,
+                                            composite_height,
+                                            frame_id,
+                                        ) {
+                                            Ok(gfx_data) => {
+                                                if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
+                                                    let is_large = gfx_data.len() > 50_000;
+                                                    if frame_id % 60 == 0 || frame_id <= 5 || encoded.is_keyframe || is_large {
+                                                        info!(
+                                                            frame_id,
+                                                            h264_bytes = h264_len,
+                                                            gfx_bytes = gfx_data.len(),
+                                                            keyframe = encoded.is_keyframe,
+                                                            "GFX: sending H.264 frame via DVC"
+                                                        );
+                                                    }
+                                                    let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
+                                                        channel_id,
+                                                        data: gfx_data,
+                                                    });
+                                                    gfx_frames_dropped = 0;
+                                                }
+                                                gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(error = %e, "GFX frame encode failed");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::warn!(error = %e, "H.264 encode failed");
+                        }
+                    }
+                }
+
+                // Send to RDP bitmap pipeline only if GFX is NOT active
+                let gfx_active = gfx_state_render.lock().unwrap().ready;
+                if !gfx_active {
+                    let _ = rdp_pixel_tx.try_send(frame);
+                }
+            }
+
+            // Send frame callbacks to clients on all outputs
+            let elapsed = state.start_time.elapsed();
+            for o in &outputs {
+                state.space.elements().for_each(|window| {
+                    window.send_frame(o, elapsed, None, |_, _| {
+                        Some(o.clone())
+                    });
+                });
+
+                let layer_map = layer_map_for_output(o);
                 for layer in layer_map.layers() {
-                    layer.send_frame(output, state.start_time.elapsed(), None, |_, _| {
-                        Some(output.clone())
+                    layer.send_frame(o, elapsed, None, |_, _| {
+                        Some(o.clone())
                     });
                 }
             }
