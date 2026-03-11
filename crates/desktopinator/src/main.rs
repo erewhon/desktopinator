@@ -439,6 +439,8 @@ enum VncInputEvent {
     PointerMove { x: u16, y: u16, button_mask: u8 },
     Key { keysym: u32, pressed: bool },
     ResizeOutput { width: u16, height: u16 },
+    ClientConnected,
+    ClientDisconnected,
 }
 
 /// RDP input events bridged from the RDP server thread to the compositor event loop.
@@ -448,8 +450,11 @@ enum RdpInputEvent {
     MouseScroll { value: i16 },
     /// Already converted to XKB keycode (evdev + 8)
     Key { keycode: u32, pressed: bool },
-    /// Client requested a display resize (e.g. window resize in mstsc)
-    /// RDP client disconnected (used with --one-shot to exit)
+    /// An RDP client connected (session takeover: new client gets existing session).
+    ClientConnected,
+    /// An RDP client disconnected. Used to release stuck keys and emit IPC events.
+    ClientDisconnected,
+    /// Compositor should quit (used with --one-shot to exit after first disconnect).
     Quit,
 }
 
@@ -544,9 +549,11 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     match event {
                         ServerEvent::ClientConnected { client_id } => {
                             info!(client_id, "VNC client connected");
+                            let _ = tx.send(VncInputEvent::ClientConnected);
                         }
                         ServerEvent::ClientDisconnected { client_id } => {
                             info!(client_id, "VNC client disconnected");
+                            let _ = tx.send(VncInputEvent::ClientDisconnected);
                         }
                         ServerEvent::PointerMove {
                             x,
@@ -650,6 +657,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 width: rdp_width.clone(),
                 height: rdp_height.clone(),
                 update_tx: rdp_update_tx.clone(),
+                input_tx: rdp_input_tx.clone(),
             };
             let quit_tx = rdp_input_tx.clone();
             let input_handler = DinatorRdpInputHandler {
@@ -1147,6 +1155,36 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                         }
                     }
                 }
+                VncInputEvent::ClientConnected => {
+                    state.vnc_clients += 1;
+                    info!(clients = state.vnc_clients, "VNC: client connected (session takeover)");
+                    pressed_keys.clear();
+                    state.emit_event(dinator_ipc::IpcEvent::ClientConnected {
+                        protocol: "vnc".to_string(),
+                    });
+                }
+                VncInputEvent::ClientDisconnected => {
+                    state.vnc_clients = state.vnc_clients.saturating_sub(1);
+                    info!(clients = state.vnc_clients, "VNC: client disconnected");
+                    // Release all held keys to prevent stuck modifiers
+                    if let Some(keyboard) = state.seat.get_keyboard() {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        for &keycode in pressed_keys.iter() {
+                            keyboard.input::<(), _>(
+                                state,
+                                keycode.into(),
+                                KeyState::Released,
+                                serial,
+                                0,
+                                |_, _, _| FilterResult::Forward,
+                            );
+                        }
+                    }
+                    pressed_keys.clear();
+                    state.emit_event(dinator_ipc::IpcEvent::ClientDisconnected {
+                        protocol: "vnc".to_string(),
+                    });
+                }
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to insert VNC input source: {e}"))?;
@@ -1412,6 +1450,36 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             }
                         }
                     }
+                }
+                RdpInputEvent::ClientConnected => {
+                    state.rdp_clients += 1;
+                    info!(clients = state.rdp_clients, "RDP: client connected (session takeover)");
+                    rdp_pressed_keys.clear();
+                    state.emit_event(dinator_ipc::IpcEvent::ClientConnected {
+                        protocol: "rdp".to_string(),
+                    });
+                }
+                RdpInputEvent::ClientDisconnected => {
+                    state.rdp_clients = state.rdp_clients.saturating_sub(1);
+                    info!(clients = state.rdp_clients, "RDP: client disconnected");
+                    // Release all held keys to prevent stuck modifiers
+                    if let Some(keyboard) = state.seat.get_keyboard() {
+                        let serial = SERIAL_COUNTER.next_serial();
+                        for &keycode in rdp_pressed_keys.iter() {
+                            keyboard.input::<(), _>(
+                                state,
+                                keycode.into(),
+                                KeyState::Released,
+                                serial,
+                                0,
+                                |_, _, _| FilterResult::Forward,
+                            );
+                        }
+                    }
+                    rdp_pressed_keys.clear();
+                    state.emit_event(dinator_ipc::IpcEvent::ClientDisconnected {
+                        protocol: "rdp".to_string(),
+                    });
                 }
                 RdpInputEvent::Quit => {
                     info!("RDP one-shot: received quit signal");
@@ -2823,6 +2891,22 @@ fn handle_ipc_command(
                 message: "subscribe should be handled by IPC server".to_string(),
             }
         }
+        IpcCommand::Status => {
+            let window_count = state.space.elements().count();
+            let output_count = state.space.outputs().count();
+            let focused_output = state.focused_output.clone().unwrap_or_default();
+            let focused_ws = state.focused_workspace();
+            IpcResponse::Data {
+                data: serde_json::json!({
+                    "rdp_clients": state.rdp_clients,
+                    "vnc_clients": state.vnc_clients,
+                    "windows": window_count,
+                    "outputs": output_count,
+                    "focused_output": focused_output,
+                    "focused_workspace": focused_ws,
+                }),
+            }
+        }
     }
 }
 
@@ -2934,10 +3018,21 @@ struct DinatorRdpDisplay {
     width: Arc<std::sync::atomic::AtomicU16>,
     height: Arc<std::sync::atomic::AtomicU16>,
     update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>>,
+    input_tx: calloop::channel::Sender<RdpInputEvent>,
 }
 
 struct DinatorRdpDisplayUpdates {
     rx: tokio::sync::mpsc::Receiver<ironrdp_server::DisplayUpdate>,
+    /// Sends ClientDisconnected when this struct is dropped (connection ended).
+    disconnect_tx: Option<calloop::channel::Sender<RdpInputEvent>>,
+}
+
+impl Drop for DinatorRdpDisplayUpdates {
+    fn drop(&mut self) {
+        if let Some(ref tx) = self.disconnect_tx {
+            let _ = tx.send(RdpInputEvent::ClientDisconnected);
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -2959,7 +3054,11 @@ impl ironrdp_server::RdpServerDisplay for DinatorRdpDisplay {
     async fn updates(&mut self) -> anyhow::Result<Box<dyn ironrdp_server::RdpServerDisplayUpdates>> {
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         *self.update_tx.lock().await = Some(tx);
-        Ok(Box::new(DinatorRdpDisplayUpdates { rx }))
+        let _ = self.input_tx.send(RdpInputEvent::ClientConnected);
+        Ok(Box::new(DinatorRdpDisplayUpdates {
+            rx,
+            disconnect_tx: Some(self.input_tx.clone()),
+        }))
     }
 
     // request_layout is handled by our custom DisplayControlDvc handler

@@ -70,6 +70,8 @@ pub enum IpcCommand {
     /// Subscribe to compositor events. The connection switches to
     /// streaming mode: one JSON line per event, no further commands accepted.
     Subscribe,
+    /// Get compositor status (connected clients, outputs, etc.).
+    Status,
 }
 
 /// An event pushed from the compositor to subscribed IPC clients.
@@ -102,6 +104,10 @@ pub enum IpcEvent {
     OutputRemoved { name: String },
     /// An output gained focus.
     OutputFocused { name: String },
+    /// A remote client connected.
+    ClientConnected { protocol: String },
+    /// A remote client disconnected.
+    ClientDisconnected { protocol: String },
 }
 
 /// A response from the compositor back to dinatorctl.

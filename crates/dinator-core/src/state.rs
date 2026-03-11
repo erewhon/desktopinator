@@ -189,6 +189,10 @@ pub struct DinatorState {
     /// Text from RDP client clipboard, available for Wayland apps to paste.
     pub rdp_clipboard_text: Option<String>,
 
+    // Remote client tracking
+    pub rdp_clients: u32,
+    pub vnc_clients: u32,
+
     // XWayland
     pub xwayland_shell_state: XWaylandShellState,
     pub x11_wm: Option<X11Wm>,
@@ -260,6 +264,8 @@ impl DinatorState {
             workspace_focus: HashMap::new(),
             on_clipboard_change: None,
             rdp_clipboard_text: None,
+            rdp_clients: 0,
+            vnc_clients: 0,
             xwayland_shell_state,
             x11_wm: None,
             x11_surface_to_id: HashMap::new(),

@@ -178,6 +178,7 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
             }
         }
         "subscribe" | "events" => Ok(IpcCommand::Subscribe),
+        "status" => Ok(IpcCommand::Status),
         _ => {
             anyhow::bail!("unknown command: {cmd}\n\nRun 'dinatorctl' with no args for usage.");
         }
@@ -211,6 +212,7 @@ COMMANDS:
     move-to-workspace N  Move focused window to workspace N
     workspaces           List all workspaces with window counts
     subscribe            Stream compositor events (JSON lines)
+    status               Show compositor status (clients, outputs, windows)
     gap PIXELS           Set gap/gutter between windows (e.g. 0, 4, 10)
     background SPEC      Set background (#RRGGBB, r,g,b, or gradient COLOR-COLOR)
     output create NAME WxH  Create a new headless output
