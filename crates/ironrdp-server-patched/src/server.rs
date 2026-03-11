@@ -219,6 +219,7 @@ pub struct RdpServer {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     #[allow(clippy::type_complexity)]
     custom_dvc_builder: Option<Box<dyn Fn(dvc::DrdynvcServer) -> dvc::DrdynvcServer + Send>>,
+    skip_builtin_display_control: bool,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
@@ -281,6 +282,7 @@ impl RdpServer {
             sound_factory,
             cliprdr_factory,
             custom_dvc_builder: None,
+            skip_builtin_display_control: false,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
@@ -295,6 +297,12 @@ impl RdpServer {
         builder: impl Fn(dvc::DrdynvcServer) -> dvc::DrdynvcServer + Send + 'static,
     ) {
         self.custom_dvc_builder = Some(Box::new(builder));
+    }
+
+    /// Skip registering the built-in DisplayControl DVC handler.
+    /// Call this when providing a custom DisplayControl handler via `set_dvc_builder`.
+    pub fn skip_builtin_display_control(&mut self) {
+        self.skip_builtin_display_control = true;
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
@@ -320,12 +328,15 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
-        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
         let mut dvc = dvc::DrdynvcServer::new()
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
-            })
-            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+            });
+
+        if !self.skip_builtin_display_control {
+            let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
+            dvc = dvc.with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
+        }
 
         // Register custom DVC channels (e.g., GFX for H.264)
         if let Some(builder) = self.custom_dvc_builder.as_ref() {

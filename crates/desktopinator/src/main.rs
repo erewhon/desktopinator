@@ -1,5 +1,6 @@
 mod audio;
 mod clipboard;
+mod displaycontrol;
 mod gfx;
 mod ipc;
 
@@ -448,7 +449,6 @@ enum RdpInputEvent {
     /// Already converted to XKB keycode (evdev + 8)
     Key { keycode: u32, pressed: bool },
     /// Client requested a display resize (e.g. window resize in mstsc)
-    ResizeDisplay { width: u16, height: u16 },
     /// RDP client disconnected (used with --one-shot to exit)
     Quit,
 }
@@ -597,6 +597,11 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     )));
     let gfx_state_handler = gfx_state.clone();
     let gfx_state_render = gfx_state.clone();
+
+    // DisplayControl shared state for client-driven monitor layout
+    let dc_state = Arc::new(std::sync::Mutex::new(displaycontrol::DisplayControlState::default()));
+    let dc_state_handler = dc_state.clone();
+    let dc_state_render = dc_state.clone();
     // ServerEvent sender — set once the RDP server is built
     let rdp_event_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<ironrdp_server::ServerEvent>>>> =
         Arc::new(std::sync::Mutex::new(None));
@@ -645,7 +650,6 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 width: rdp_width.clone(),
                 height: rdp_height.clone(),
                 update_tx: rdp_update_tx.clone(),
-                resize_tx: rdp_input_tx.clone(),
             };
             let quit_tx = rdp_input_tx.clone();
             let input_handler = DinatorRdpInputHandler {
@@ -669,11 +673,17 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 .with_sound_factory(Some(Box::new(sound_factory)))
                 .build();
 
-            // Register GFX DVC channel for H.264 streaming — creates a new handler per connection
+            // Use our custom DisplayControl handler (supports multi-monitor)
+            server.skip_builtin_display_control();
+
+            // Register GFX + DisplayControl DVC channels — creates new handlers per connection
             let gfx_state_for_builder = gfx_state_handler.clone();
+            let dc_state_for_builder = dc_state_handler.clone();
             server.set_dvc_builder(move |dvc| {
-                let handler = gfx::GfxHandler::new(gfx_state_for_builder.clone());
-                dvc.with_dynamic_channel(handler)
+                let gfx_handler = gfx::GfxHandler::new(gfx_state_for_builder.clone());
+                let dc_handler = displaycontrol::DisplayControlDvc::new(dc_state_for_builder.clone());
+                dvc.with_dynamic_channel(gfx_handler)
+                    .with_dynamic_channel(dc_handler)
             });
 
             // Share the event sender so the compositor can send GFX frames
@@ -1403,10 +1413,6 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                         }
                     }
                 }
-                RdpInputEvent::ResizeDisplay { width, height } => {
-                    info!(width, height, "RDP client requested resize");
-                    *pending_resize_rdp.lock().unwrap() = Some((width, height));
-                }
                 RdpInputEvent::Quit => {
                     info!("RDP one-shot: received quit signal");
                     state.loop_signal.stop();
@@ -1438,7 +1444,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
         .handle()
         .insert_source(timer, move |_, _, state| {
             // Collect current outputs
-            let outputs: Vec<Output> = state.space.outputs().cloned().collect();
+            let mut outputs: Vec<Output> = state.space.outputs().cloned().collect();
 
             // Check for new RDP clipboard text → set as Wayland clipboard
             {
@@ -1533,6 +1539,20 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
 
                     state.retile(&focused);
                 }
+            }
+
+            // Check for pending DisplayControl monitor layout from RDP client
+            if let Some(monitors) = dc_state_render.lock().unwrap().pending_layout.take() {
+                apply_monitor_layout(
+                    &monitors,
+                    state,
+                    &mut output_render_states,
+                    &mut h264_encoders,
+                    &encoder_pref_owned,
+                    &mut renderer,
+                );
+                // Re-collect outputs after layout change
+                outputs = state.space.outputs().cloned().collect();
             }
 
             // Calculate composite dimensions (bounding box of all outputs)
@@ -1997,6 +2017,172 @@ struct PluginKeybinding {
 }
 
 /// Create an H.264 encoder with the given preference.
+/// Apply a monitor layout from the RDP DisplayControl channel.
+///
+/// Compares the requested layout with current outputs and creates/removes/resizes
+/// as needed. Primary monitor keeps the existing primary output name; additional
+/// monitors get names like "rdp-1", "rdp-2", etc.
+fn apply_monitor_layout(
+    monitors: &[displaycontrol::MonitorEntry],
+    state: &mut DinatorState,
+    output_render_states: &mut HashMap<String, (smithay::backend::renderer::gles::GlesRenderbuffer, OutputDamageTracker)>,
+    h264_encoders: &mut HashMap<String, Box<dyn dinator_encode::Encoder>>,
+    encoder_pref: &str,
+    renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
+) {
+    use smithay::backend::allocator::Fourcc;
+    use smithay::backend::renderer::Offscreen;
+    use smithay::utils::Size;
+
+    if monitors.is_empty() {
+        return;
+    }
+
+    info!(count = monitors.len(), "applying DisplayControl monitor layout");
+
+    // Sort: primary first, then by position (left, top)
+    let mut sorted: Vec<(usize, &displaycontrol::MonitorEntry)> =
+        monitors.iter().enumerate().collect();
+    sorted.sort_by(|(_, a), (_, b)| {
+        b.is_primary
+            .cmp(&a.is_primary)
+            .then(a.left.cmp(&b.left))
+            .then(a.top.cmp(&b.top))
+    });
+
+    // Current output names
+    let current_names: Vec<String> = state.space.outputs().map(|o| o.name()).collect();
+
+    // Build target output list: name, position, size
+    let mut target_outputs: Vec<(String, i32, i32, u16, u16)> = Vec::new();
+    for (i, (_, m)) in sorted.iter().enumerate() {
+        let name = if i == 0 {
+            // Primary monitor keeps the first existing output's name
+            current_names.first().cloned().unwrap_or_else(|| "headless-0".to_string())
+        } else {
+            format!("rdp-{i}")
+        };
+        let w = m.width.min(8192) as u16;
+        let h = m.height.min(8192) as u16;
+        target_outputs.push((name, m.left, m.top, w, h));
+    }
+
+    let target_names: Vec<String> = target_outputs.iter().map(|(n, _, _, _, _)| n.clone()).collect();
+
+    // Remove outputs not in target list
+    let to_remove: Vec<Output> = state
+        .space
+        .outputs()
+        .filter(|o| !target_names.contains(&o.name()))
+        .cloned()
+        .collect();
+    for output in &to_remove {
+        if state.output_states.len() <= 1 {
+            break; // never remove the last output
+        }
+        let name = output.name();
+        info!(output = %name, "DisplayControl: removing output");
+        state.unregister_output(output);
+        output_render_states.remove(&name);
+        h264_encoders.remove(&name);
+        state.emit_event(dinator_ipc::IpcEvent::OutputRemoved { name });
+    }
+
+    // Snapshot existing outputs so we can look them up without borrowing state
+    let existing_outputs: HashMap<String, Output> = state
+        .space
+        .outputs()
+        .map(|o| (o.name(), o.clone()))
+        .collect();
+
+    // Create or resize outputs
+    for (name, left, top, w, h) in &target_outputs {
+        let mode = Mode {
+            size: (*w as i32, *h as i32).into(),
+            refresh: 60_000,
+        };
+
+        if let Some(existing) = existing_outputs.get(name) {
+            // Resize if dimensions changed
+            let needs_resize = existing
+                .current_mode()
+                .map(|m| m.size.w != *w as i32 || m.size.h != *h as i32)
+                .unwrap_or(true);
+
+            if needs_resize {
+                info!(output = %name, w, h, "DisplayControl: resizing output");
+                existing.change_current_state(Some(mode), None, None, None);
+                existing.set_preferred(mode);
+
+                // Recreate renderbuffer
+                match renderer.create_buffer(Fourcc::Abgr8888, Size::from((*w as i32, *h as i32))) {
+                    Ok(new_rb) => {
+                        let dt = OutputDamageTracker::from_output(existing);
+                        output_render_states.insert(name.clone(), (new_rb, dt));
+                    }
+                    Err(e) => tracing::error!(output = %name, "failed to create renderbuffer: {e:?}"),
+                }
+
+                // Recreate encoder
+                h264_encoders.remove(name);
+                if let Some(enc) = create_encoder(*w as u32, *h as u32, encoder_pref) {
+                    h264_encoders.insert(name.clone(), enc);
+                }
+
+                state.retile(existing);
+            }
+
+            // Update position if changed
+            let needs_move = state
+                .space
+                .output_geometry(existing)
+                .map(|g| g.loc.x != *left || g.loc.y != *top)
+                .unwrap_or(true);
+            if needs_move {
+                info!(output = %name, left, top, "DisplayControl: repositioning output");
+                state.space.map_output(existing, (*left, *top));
+            }
+        } else {
+            // Create new output
+            info!(output = %name, w, h, left, top, "DisplayControl: creating output");
+            let new_output = Output::new(
+                name.clone(),
+                PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: Subpixel::Unknown,
+                    make: "desktopinator".into(),
+                    model: "rdp".into(),
+                },
+            );
+            new_output.change_current_state(Some(mode), None, None, None);
+            new_output.set_preferred(mode);
+            new_output.create_global::<DinatorState>(&state.display_handle);
+            state.space.map_output(&new_output, (*left, *top));
+            state.register_output(&new_output);
+
+            // Create renderbuffer
+            match renderer.create_buffer(Fourcc::Abgr8888, Size::from((*w as i32, *h as i32))) {
+                Ok(rb) => {
+                    let dt = OutputDamageTracker::from_output(&new_output);
+                    output_render_states.insert(name.clone(), (rb, dt));
+                }
+                Err(e) => tracing::error!(output = %name, "failed to create renderbuffer: {e:?}"),
+            }
+
+            // Create encoder
+            if let Some(enc) = create_encoder(*w as u32, *h as u32, encoder_pref) {
+                h264_encoders.insert(name.clone(), enc);
+            }
+
+            state.emit_event(dinator_ipc::IpcEvent::OutputCreated {
+                name: name.clone(),
+                width: *w,
+                height: *h,
+            });
+        }
+    }
+}
+
 fn create_encoder(width: u32, height: u32, pref: &str) -> Option<Box<dyn dinator_encode::Encoder>> {
     if pref == "openh264" {
         match dinator_encode::OpenH264Encoder::new(width, height, 2_000_000) {
@@ -2748,7 +2934,6 @@ struct DinatorRdpDisplay {
     width: Arc<std::sync::atomic::AtomicU16>,
     height: Arc<std::sync::atomic::AtomicU16>,
     update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>>,
-    resize_tx: calloop::channel::Sender<RdpInputEvent>,
 }
 
 struct DinatorRdpDisplayUpdates {
@@ -2777,15 +2962,8 @@ impl ironrdp_server::RdpServerDisplay for DinatorRdpDisplay {
         Ok(Box::new(DinatorRdpDisplayUpdates { rx }))
     }
 
-    fn request_layout(&mut self, layout: ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout) {
-        if let Some(monitor) = layout.monitors().first() {
-            let (w, h) = monitor.dimensions();
-            let width = w as u16;
-            let height = h as u16;
-            info!(width, height, "RDP client requested display resize");
-            let _ = self.resize_tx.send(RdpInputEvent::ResizeDisplay { width, height });
-        }
-    }
+    // request_layout is handled by our custom DisplayControlDvc handler
+    // (registered via set_dvc_builder), not through the display trait.
 }
 
 /// RDP input handler — receives keyboard/mouse events from RDP clients
