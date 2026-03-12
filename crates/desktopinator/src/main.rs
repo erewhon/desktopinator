@@ -621,6 +621,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let rdp_height_adapter = rdp_height.clone();
     let rdp_width_render = rdp_width.clone();
     let rdp_height_render = rdp_height.clone();
+    let rdp_width_input = rdp_width.clone();
+    let rdp_height_input = rdp_height.clone();
+    let dc_state_input = dc_state.clone();
     let rdp_update_tx_render = rdp_update_tx.clone();
 
     // Spawn adapter task: receives raw pixels, wraps in BitmapUpdate, sends to RDP display
@@ -1477,6 +1480,25 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                         }
                     }
                     rdp_pressed_keys.clear();
+
+                    // Reset RDP desktop size to primary output dimensions so the
+                    // next client gets a sane initial size (GFX/DisplayControl
+                    // handle multi-monitor setup after connection).
+                    if let Some(primary) = state.space.outputs().next() {
+                        if let Some(mode) = primary.current_mode() {
+                            let pw = mode.size.w as u16;
+                            let ph = mode.size.h as u16;
+                            info!(width = pw, height = ph, "RDP: reset desktop size to primary output");
+                            rdp_width_input.store(pw, std::sync::atomic::Ordering::Relaxed);
+                            rdp_height_input.store(ph, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+
+                    // Clear any pending DisplayControl layout from the old client
+                    if let Ok(mut dc) = dc_state_input.lock() {
+                        dc.pending_layout = None;
+                    }
+
                     state.emit_event(dinator_ipc::IpcEvent::ClientDisconnected {
                         protocol: "rdp".to_string(),
                     });
@@ -1673,16 +1695,29 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
 
                 let _ = vnc_resize_tx.try_send((composite_width, composite_height));
 
-                rdp_width_render.store(composite_width, std::sync::atomic::Ordering::Relaxed);
-                rdp_height_render.store(composite_height, std::sync::atomic::Ordering::Relaxed);
-                if let Ok(guard) = rdp_update_tx_render.try_lock() {
-                    if let Some(ref tx) = *guard {
-                        let _ = tx.try_send(ironrdp_server::DisplayUpdate::Resize(
-                            ironrdp_server::DesktopSize {
-                                width: composite_width,
-                                height: composite_height,
-                            },
-                        ));
+                // RDP desktop size tracks PRIMARY output only (not composite).
+                // GFX handles multi-monitor via per-surface rendering.
+                // Bitmap fallback clients only see the primary output.
+                if let Some(primary) = state.space.outputs().next() {
+                    if let Some(mode) = primary.current_mode() {
+                        let pw = mode.size.w as u16;
+                        let ph = mode.size.h as u16;
+                        let old_rw = rdp_width_render.load(std::sync::atomic::Ordering::Relaxed);
+                        let old_rh = rdp_height_render.load(std::sync::atomic::Ordering::Relaxed);
+                        if pw != old_rw || ph != old_rh {
+                            rdp_width_render.store(pw, std::sync::atomic::Ordering::Relaxed);
+                            rdp_height_render.store(ph, std::sync::atomic::Ordering::Relaxed);
+                            if let Ok(guard) = rdp_update_tx_render.try_lock() {
+                                if let Some(ref tx) = *guard {
+                                    let _ = tx.try_send(ironrdp_server::DisplayUpdate::Resize(
+                                        ironrdp_server::DesktopSize {
+                                            width: pw,
+                                            height: ph,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
 
