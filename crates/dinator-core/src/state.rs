@@ -291,9 +291,19 @@ impl DinatorState {
     // ---- Output helpers ----
 
     /// Register a new output with default per-output state.
+    /// Assigns the next unused workspace so each output has its own.
     pub fn register_output(&mut self, output: &Output) {
         let name = output.name();
-        self.output_states.insert(name.clone(), OutputState::new());
+        // Find the next workspace number not already used by another output
+        let used: std::collections::HashSet<usize> = self
+            .output_states
+            .values()
+            .map(|os| os.active_workspace)
+            .collect();
+        let ws = (1..=9).find(|n| !used.contains(n)).unwrap_or(1);
+        let mut os = OutputState::new();
+        os.active_workspace = ws;
+        self.output_states.insert(name.clone(), os);
         if self.focused_output.is_none() {
             self.focused_output = Some(name);
         }
@@ -344,7 +354,14 @@ impl DinatorState {
         };
 
         let current_ws = self.window_workspace.get(&id).copied().unwrap_or(1);
-        if current_ws == target_ws {
+
+        // Find which output currently owns this window's workspace
+        let current_output_name = self.output_states.iter()
+            .find(|(_, os)| os.active_workspace == current_ws)
+            .map(|(n, _)| n.clone());
+
+        // Don't move if already on the target output
+        if current_output_name.as_deref() == Some(target_output_name) {
             return false;
         }
 

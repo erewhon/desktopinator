@@ -106,39 +106,58 @@ fn build_render_elements(
         .map(OutputRenderElements::Space)
         .collect();
 
-    // Add focus indicator border behind the focused window
+    // Output geometry in global compositor coordinates — used to offset custom
+    // elements (border, cursor) which use global positions but must be rendered
+    // relative to this output's origin.
+    let output_geo = state.space.output_geometry(output).unwrap_or_default();
+
+    // Add focus indicator border behind the focused window (only if window is on this output)
     let border_width = 2;
     let border_color = [0.4f32, 0.6, 0.9, 1.0]; // blue
     if let Some(focused) = state.focused_window() {
         if let Some(geo) = state.space.element_geometry(focused) {
-            let buf = SolidColorBuffer::new(
-                (geo.size.w + 2 * border_width, geo.size.h + 2 * border_width),
-                border_color,
-            );
-            let loc: Point<i32, Physical> =
-                (geo.loc.x - border_width, geo.loc.y - border_width).into();
-            elements.push(OutputRenderElements::Border(
-                SolidColorRenderElement::from_buffer(&buf, loc, 1.0, 1.0, Kind::Unspecified),
-            ));
+            // Only render border on the output that contains the window
+            if output_geo.overlaps(geo) {
+                let buf = SolidColorBuffer::new(
+                    (geo.size.w + 2 * border_width, geo.size.h + 2 * border_width),
+                    border_color,
+                );
+                let loc: Point<i32, Physical> = (
+                    geo.loc.x - border_width - output_geo.loc.x,
+                    geo.loc.y - border_width - output_geo.loc.y,
+                )
+                    .into();
+                elements.push(OutputRenderElements::Border(
+                    SolidColorRenderElement::from_buffer(&buf, loc, 1.0, 1.0, Kind::Unspecified),
+                ));
+            }
         }
     }
 
-    // Render cursor as a small white square at pointer position
+    // Render cursor as a small white square at pointer position (only on the output containing it)
     if let Some(pointer) = state.seat.get_pointer() {
         let pos = pointer.current_location();
-        let cursor_size = 8;
-        let cursor_buf = SolidColorBuffer::new((cursor_size, cursor_size), [1.0, 1.0, 1.0, 1.0]);
-        let cursor_loc: Point<i32, Physical> = (pos.x as i32, pos.y as i32).into();
-        elements.insert(
-            0,
-            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
-                &cursor_buf,
-                cursor_loc,
-                1.0,
-                1.0,
-                Kind::Cursor,
-            )),
+        let cursor_rect = Rectangle::new(
+            (pos.x as i32, pos.y as i32).into(),
+            (8, 8).into(),
         );
+        if output_geo.overlaps(cursor_rect) {
+            let cursor_size = 8;
+            let cursor_buf =
+                SolidColorBuffer::new((cursor_size, cursor_size), [1.0, 1.0, 1.0, 1.0]);
+            let cursor_loc: Point<i32, Physical> =
+                (pos.x as i32 - output_geo.loc.x, pos.y as i32 - output_geo.loc.y).into();
+            elements.insert(
+                0,
+                OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                    &cursor_buf,
+                    cursor_loc,
+                    1.0,
+                    1.0,
+                    Kind::Cursor,
+                )),
+            );
+        }
     }
 
     // Render gradient background as horizontal bands (behind everything else)
