@@ -334,11 +334,74 @@ impl DinatorState {
         }
     }
 
-    /// Focus an output by name.
+    /// Focus an output by name. Also focuses the first window on that output.
     pub fn focus_output(&mut self, name: &str) {
-        if self.output_states.contains_key(name) {
-            self.focused_output = Some(name.to_string());
+        if !self.output_states.contains_key(name) {
+            return;
         }
+        self.focused_output = Some(name.to_string());
+
+        // Focus the first window on the target output's workspace
+        let ws = self.output_states[name].active_workspace;
+        let first_id = self.ws_window_list(ws).first().copied();
+        if let Some(id) = first_id {
+            if let Some(window) = self.window_map.get(&id) {
+                let window = window.clone();
+                if let Some(surface) = Self::window_wl_surface(&window) {
+                    if let Some(keyboard) = self.seat.get_keyboard() {
+                        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+                        keyboard.set_focus(self, Some(surface), serial);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get outputs sorted by x position (left to right).
+    fn outputs_by_position(&self) -> Vec<(String, i32)> {
+        let mut outputs: Vec<(String, i32)> = self
+            .space
+            .outputs()
+            .filter_map(|o| {
+                self.space
+                    .output_geometry(o)
+                    .map(|geo| (o.name(), geo.loc.x))
+            })
+            .collect();
+        outputs.sort_by_key(|(_, x)| *x);
+        outputs
+    }
+
+    /// Focus the output to the left or right of the currently focused one.
+    /// `direction`: -1 for left, +1 for right.
+    pub fn focus_output_direction(&mut self, direction: i32) {
+        let sorted = self.outputs_by_position();
+        if sorted.len() < 2 {
+            return;
+        }
+        let current = self.focused_output.as_deref().unwrap_or("");
+        let idx = sorted.iter().position(|(n, _)| n == current).unwrap_or(0);
+        let len = sorted.len() as i32;
+        let next_idx = ((idx as i32 + direction).rem_euclid(len)) as usize;
+        let target = sorted[next_idx].0.clone();
+        info!(from = current, to = %target, "focus output direction");
+        self.focus_output(&target);
+        self.emit_event(IpcEvent::OutputFocused { name: target });
+    }
+
+    /// Move the focused window to the output left/right of current, then focus that output.
+    /// `direction`: -1 for left, +1 for right.
+    pub fn move_window_to_output_direction(&mut self, direction: i32) -> bool {
+        let sorted = self.outputs_by_position();
+        if sorted.len() < 2 {
+            return false;
+        }
+        let current = self.focused_output.as_deref().unwrap_or("");
+        let idx = sorted.iter().position(|(n, _)| n == current).unwrap_or(0);
+        let len = sorted.len() as i32;
+        let next_idx = ((idx as i32 + direction).rem_euclid(len)) as usize;
+        let target = sorted[next_idx].0.clone();
+        self.move_window_to_output(&target)
     }
 
     /// Move the focused window to a different output.

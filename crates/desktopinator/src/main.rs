@@ -1030,7 +1030,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                         | keysyms::KEY_h | keysyms::KEY_l
                                         | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
                                         | keysyms::KEY_plus | keysyms::KEY_equal
-                                        | keysyms::KEY_minus => {
+                                        | keysyms::KEY_minus
+                                        | keysyms::KEY_comma | keysyms::KEY_period
+                                        | keysyms::KEY_less | keysyms::KEY_greater => {
                                             if key_state == KeyState::Pressed {
                                                 let action = match sym.raw() {
                                                     keysyms::KEY_Return => KeyAction::LaunchTerminal,
@@ -1049,6 +1051,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                                         KeyAction::ResolutionUp
                                                     }
                                                     keysyms::KEY_minus => KeyAction::ResolutionDown,
+                                                    keysyms::KEY_comma => KeyAction::FocusOutputLeft,
+                                                    keysyms::KEY_period => KeyAction::FocusOutputRight,
+                                                    keysyms::KEY_less => KeyAction::MoveToOutputLeft,
+                                                    keysyms::KEY_greater => KeyAction::MoveToOutputRight,
                                                     _ => unreachable!(),
                                                 };
                                                 return FilterResult::Intercept(Some(action));
@@ -1102,6 +1108,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                 }
                                 KeyAction::FocusNext => state.focus_next(),
                                 KeyAction::FocusPrev => state.focus_prev(),
+                                KeyAction::FocusOutputLeft => state.focus_output_direction(-1),
+                                KeyAction::FocusOutputRight => state.focus_output_direction(1),
+                                KeyAction::MoveToOutputLeft => { state.move_window_to_output_direction(-1); }
+                                KeyAction::MoveToOutputRight => { state.move_window_to_output_direction(1); }
                                 KeyAction::SwapMaster => state.swap_master(),
                                 KeyAction::MasterGrow | KeyAction::MasterShrink => {
                                     let changed = if matches!(action, KeyAction::MasterGrow) {
@@ -1349,7 +1359,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                     | keysyms::KEY_h | keysyms::KEY_l
                                     | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
                                     | keysyms::KEY_plus | keysyms::KEY_equal
-                                    | keysyms::KEY_minus => {
+                                    | keysyms::KEY_minus
+                                    | keysyms::KEY_comma | keysyms::KEY_period
+                                    | keysyms::KEY_less | keysyms::KEY_greater => {
                                         if key_state == KeyState::Pressed {
                                             let action = match sym.raw() {
                                                 keysyms::KEY_Return => KeyAction::LaunchTerminal,
@@ -1368,6 +1380,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                                     KeyAction::ResolutionUp
                                                 }
                                                 keysyms::KEY_minus => KeyAction::ResolutionDown,
+                                                keysyms::KEY_comma => KeyAction::FocusOutputLeft,
+                                                keysyms::KEY_period => KeyAction::FocusOutputRight,
+                                                keysyms::KEY_less => KeyAction::MoveToOutputLeft,
+                                                keysyms::KEY_greater => KeyAction::MoveToOutputRight,
                                                 _ => unreachable!(),
                                             };
                                             return FilterResult::Intercept(Some(action));
@@ -1418,6 +1434,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             }
                             KeyAction::FocusNext => state.focus_next(),
                             KeyAction::FocusPrev => state.focus_prev(),
+                            KeyAction::FocusOutputLeft => state.focus_output_direction(-1),
+                            KeyAction::FocusOutputRight => state.focus_output_direction(1),
+                            KeyAction::MoveToOutputLeft => { state.move_window_to_output_direction(-1); }
+                            KeyAction::MoveToOutputRight => { state.move_window_to_output_direction(1); }
                             KeyAction::SwapMaster => state.swap_master(),
                             KeyAction::MasterGrow | KeyAction::MasterShrink => {
                                 let changed = if matches!(action, KeyAction::MasterGrow) {
@@ -2122,6 +2142,10 @@ enum KeyAction {
     ToggleMonocle,
     ResolutionUp,
     ResolutionDown,
+    FocusOutputLeft,
+    FocusOutputRight,
+    MoveToOutputLeft,
+    MoveToOutputRight,
     Quit,
     PluginCallback(String),
     SwitchWorkspace(usize),
