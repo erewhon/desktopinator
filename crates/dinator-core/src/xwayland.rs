@@ -284,6 +284,7 @@ impl DinatorState {
         // Auto-float transient windows, dialogs, splashes, utilities, tooltips
         use smithay::xwayland::xwm::WmWindowType;
         let is_transient = window.is_transient_for().is_some();
+        let title_lower = window.title().to_lowercase();
         let should_float = is_transient
             || matches!(
                 window.window_type(),
@@ -292,7 +293,8 @@ impl DinatorState {
                     | Some(WmWindowType::Utility)
                     | Some(WmWindowType::Toolbar)
                     | Some(WmWindowType::Notification)
-            );
+            )
+            || title_lower == "splash";
 
         info!(
             title = ?window.title(),
@@ -319,9 +321,24 @@ impl DinatorState {
         // Map and retile
         let output = self.get_focused_output();
         if should_float {
-            // Float at the window's requested geometry
+            // Center floating dialog on the focused output
             let geo = window.geometry();
-            self.space.map_element(smithay_window, (geo.loc.x, geo.loc.y), false);
+            let (cx, cy) = if let Some(ref out) = output {
+                if let Some(out_geo) = self.space.output_geometry(out) {
+                    let w = geo.size.w.max(1);
+                    let h = geo.size.h.max(1);
+                    (
+                        out_geo.loc.x + (out_geo.size.w - w) / 2,
+                        out_geo.loc.y + (out_geo.size.h - h) / 2,
+                    )
+                } else {
+                    (geo.loc.x, geo.loc.y)
+                }
+            } else {
+                (geo.loc.x, geo.loc.y)
+            };
+            info!(x = cx, y = cy, w = geo.size.w, h = geo.size.h, "XWayland: floating at");
+            self.space.map_element(smithay_window, (cx, cy), false);
             if let Some(w) = self.window_map.get(&id) {
                 self.space.raise_element(w, true);
             }

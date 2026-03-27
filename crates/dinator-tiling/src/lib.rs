@@ -558,7 +558,7 @@ pub struct StackedLayout {
 impl Default for StackedLayout {
     fn default() -> Self {
         Self {
-            tab_height: 24,
+            tab_height: 28,
             gap: 4,
         }
     }

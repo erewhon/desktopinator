@@ -210,13 +210,13 @@ fn build_render_elements(
             };
             if !label.is_empty() {
                 let text_color = if *is_focused {
-                    [220u8, 225, 240]
+                    [230u8, 235, 245]
                 } else {
-                    [160, 165, 180]
+                    [170, 175, 190]
                 };
-                let text_x = tab_x + 10; // padding after accent stripe
-                let text_max_w = tab_w - 16;
-                let (pixels, tw, th) = text::render_text(&label, 14.0, text_color, text_max_w, tab_h);
+                let text_x = tab_x + 12; // padding after accent stripe
+                let text_max_w = tab_w - 20;
+                let (pixels, tw, th) = text::render_text(&label, 16.0, text_color, text_max_w, tab_h);
                 if tw > 0 && th > 0 {
                     use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
                     let buf = MemoryRenderBuffer::from_slice(

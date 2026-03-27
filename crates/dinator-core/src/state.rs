@@ -561,7 +561,7 @@ impl DinatorState {
             return None;
         }
 
-        let tab_height = 24; // matches StackedLayout default
+        let tab_height = 28; // matches StackedLayout default
         let gap = os.layout.gap();
 
         let tabs: Vec<(String, String, bool)> = ws_windows
