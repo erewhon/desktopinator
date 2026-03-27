@@ -1005,6 +1005,19 @@ impl DinatorState {
                 self.space.raise_element(window, false);
             }
         }
+
+        // Raise floating windows above everything else so dialogs/popups stay visible
+        let floating_on_ws: Vec<WindowId> = self
+            .floating
+            .iter()
+            .filter(|id| ws_windows.contains(id))
+            .copied()
+            .collect();
+        for id in floating_on_ws {
+            if let Some(window) = self.window_map.get(&id) {
+                self.space.raise_element(window, false);
+            }
+        }
     }
 
     /// Set the tiling layout by name on the focused output. Returns true if changed.
