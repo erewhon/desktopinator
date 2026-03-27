@@ -116,22 +116,47 @@ impl CompositorHandler for DinatorState {
                         .unwrap_or(false)
                 });
 
-                if has_parent {
+                // Auto-float windows that have a parent set, or that look like
+                // notification popups (no app_id, small geometry).
+                let app_id = compositor::with_states(toplevel.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .and_then(|d| d.lock().unwrap().app_id.clone())
+                });
+                let win_geo = window.geometry();
+                let looks_like_popup = app_id.is_none()
+                    && win_geo.size.w > 0
+                    && win_geo.size.h > 0
+                    && (win_geo.size.w < 500 || win_geo.size.h < 200);
+
+                if has_parent || looks_like_popup {
                     if let Some(&id) = self.surface_to_id.get(surface) {
                         if !self.floating.contains(&id) {
-                            tracing::info!(id = id.0, "auto-floating child toplevel on commit");
+                            tracing::info!(
+                                id = id.0,
+                                ?app_id,
+                                w = win_geo.size.w,
+                                h = win_geo.size.h,
+                                parent = has_parent,
+                                "auto-floating popup/child on commit"
+                            );
                             self.floating.insert(id);
-                            // Center on output
+                            // Position at the window's committed geometry
+                            // (popups often specify their own position)
                             if let Some(output) = self.get_focused_output() {
-                                if let Some(out_geo) = self.space.output_geometry(&output) {
-                                    let win_geo = window.geometry();
-                                    let w = win_geo.size.w.max(200);
-                                    let h = win_geo.size.h.max(200);
-                                    let cx = out_geo.loc.x + (out_geo.size.w - w) / 2;
-                                    let cy = out_geo.loc.y + (out_geo.size.h - h) / 2;
-                                    self.space.map_element(window.clone(), (cx, cy), false);
-                                    self.space.raise_element(&window, true);
-                                }
+                                let (x, y) = if win_geo.loc.x > 0 || win_geo.loc.y > 0 {
+                                    (win_geo.loc.x, win_geo.loc.y)
+                                } else if let Some(out_geo) = self.space.output_geometry(&output) {
+                                    (
+                                        out_geo.loc.x + (out_geo.size.w - win_geo.size.w) / 2,
+                                        out_geo.loc.y + (out_geo.size.h - win_geo.size.h) / 2,
+                                    )
+                                } else {
+                                    (0, 0)
+                                };
+                                self.space.map_element(window.clone(), (x, y), false);
+                                self.space.raise_element(&window, true);
                                 self.retile(&output);
                             }
                         }
