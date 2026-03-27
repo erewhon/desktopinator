@@ -1028,7 +1028,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                         keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
                                         | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
                                         | keysyms::KEY_h | keysyms::KEY_l
-                                        | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
+                                        | keysyms::KEY_f | keysyms::KEY_v
+                                        | keysyms::KEY_m | keysyms::KEY_M
                                         | keysyms::KEY_plus | keysyms::KEY_equal
                                         | keysyms::KEY_minus
                                         | keysyms::KEY_comma | keysyms::KEY_period
@@ -1046,7 +1047,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                                     keysyms::KEY_l => KeyAction::MasterGrow,
                                                     keysyms::KEY_f => KeyAction::ToggleFullscreen,
                                                     keysyms::KEY_v => KeyAction::ToggleFloat,
-                                                    keysyms::KEY_m => KeyAction::ToggleMonocle,
+                                                    keysyms::KEY_m => KeyAction::CycleLayoutForward,
+                                                    keysyms::KEY_M => KeyAction::CycleLayoutBackward,
                                                     keysyms::KEY_plus | keysyms::KEY_equal => {
                                                         KeyAction::ResolutionUp
                                                     }
@@ -1132,17 +1134,15 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                 KeyAction::ToggleFloat => {
                                     state.toggle_float();
                                 }
-                                KeyAction::ToggleMonocle => {
-                                    let current = state.layout_name();
-                                    let new_layout = if current == "monocle" { "column" } else { "monocle" };
-                                    state.set_layout(new_layout);
-                                    let output = state.get_focused_output();
-                                    if let Some(output) = output {
-                                        state.retile(&output);
+                                KeyAction::CycleLayoutForward | KeyAction::CycleLayoutBackward => {
+                                    let dir = if matches!(action, KeyAction::CycleLayoutForward) { 1 } else { -1 };
+                                    if let Some(name) = state.cycle_layout(dir) {
+                                        let output = state.get_focused_output();
+                                        if let Some(output) = output {
+                                            state.retile(&output);
+                                        }
+                                        state.emit_event(dinator_ipc::IpcEvent::LayoutChanged { name });
                                     }
-                                    state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
-                                        name: new_layout.to_string(),
-                                    });
                                 }
                                 KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
                                     let dir = if matches!(action, KeyAction::ResolutionUp) {
@@ -1357,7 +1357,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                     keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
                                     | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
                                     | keysyms::KEY_h | keysyms::KEY_l
-                                    | keysyms::KEY_f | keysyms::KEY_v | keysyms::KEY_m
+                                    | keysyms::KEY_f | keysyms::KEY_v
+                                    | keysyms::KEY_m | keysyms::KEY_M
                                     | keysyms::KEY_plus | keysyms::KEY_equal
                                     | keysyms::KEY_minus
                                     | keysyms::KEY_comma | keysyms::KEY_period
@@ -1375,7 +1376,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                                 keysyms::KEY_l => KeyAction::MasterGrow,
                                                 keysyms::KEY_f => KeyAction::ToggleFullscreen,
                                                 keysyms::KEY_v => KeyAction::ToggleFloat,
-                                                keysyms::KEY_m => KeyAction::ToggleMonocle,
+                                                keysyms::KEY_m => KeyAction::CycleLayoutForward,
+                                                keysyms::KEY_M => KeyAction::CycleLayoutBackward,
                                                 keysyms::KEY_plus | keysyms::KEY_equal => {
                                                     KeyAction::ResolutionUp
                                                 }
@@ -1454,17 +1456,15 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             }
                             KeyAction::ToggleFullscreen => { state.toggle_fullscreen(); }
                             KeyAction::ToggleFloat => { state.toggle_float(); }
-                            KeyAction::ToggleMonocle => {
-                                let current = state.layout_name();
-                                let new_layout = if current == "monocle" { "column" } else { "monocle" };
-                                state.set_layout(new_layout);
-                                let output = state.get_focused_output();
-                                if let Some(output) = output {
-                                    state.retile(&output);
+                            KeyAction::CycleLayoutForward | KeyAction::CycleLayoutBackward => {
+                                let dir = if matches!(action, KeyAction::CycleLayoutForward) { 1 } else { -1 };
+                                if let Some(name) = state.cycle_layout(dir) {
+                                    let output = state.get_focused_output();
+                                    if let Some(output) = output {
+                                        state.retile(&output);
+                                    }
+                                    state.emit_event(dinator_ipc::IpcEvent::LayoutChanged { name });
                                 }
-                                state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
-                                    name: new_layout.to_string(),
-                                });
                             }
                             KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
                                 let dir = if matches!(action, KeyAction::ResolutionUp) { 1 } else { -1 };
@@ -2139,7 +2139,8 @@ enum KeyAction {
     MasterShrink,
     ToggleFullscreen,
     ToggleFloat,
-    ToggleMonocle,
+    CycleLayoutForward,
+    CycleLayoutBackward,
     ResolutionUp,
     ResolutionDown,
     FocusOutputLeft,

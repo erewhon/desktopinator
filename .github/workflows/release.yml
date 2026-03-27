@@ -123,3 +123,112 @@ jobs:
         with:
           files: artifacts/*
           generate_release_notes: true
+
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release' }}
+    steps:
+      - name: Get version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "release" ]]; then
+            echo "version=${{ github.event.release.tag_name }}" | sed 's/^version=v/version=/' >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait for release assets
+        run: sleep 10
+
+      - name: Download release binaries and compute checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE_URL="https://github.com/erewhon/desktopinator/releases/download/v${VERSION}"
+          for binary in desktopinator-linux-x86_64 desktopinator-linux-aarch64 dinatorctl-linux-x86_64 dinatorctl-linux-aarch64; do
+            curl -fsSL -o "$binary" "${BASE_URL}/${binary}" || echo "WARN: $binary not found"
+            if [ -f "$binary" ]; then
+              sha256sum "$binary" | awk '{print $1}' > "${binary}.sha256"
+            fi
+          done
+
+      - name: Generate formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA_X86=$(cat desktopinator-linux-x86_64.sha256 2>/dev/null || echo "PLACEHOLDER")
+          SHA_ARM=$(cat desktopinator-linux-aarch64.sha256 2>/dev/null || echo "PLACEHOLDER")
+          SHA_CTL_X86=$(cat dinatorctl-linux-x86_64.sha256 2>/dev/null || echo "PLACEHOLDER")
+          SHA_CTL_ARM=$(cat dinatorctl-linux-aarch64.sha256 2>/dev/null || echo "PLACEHOLDER")
+
+          cat > desktopinator.rb << FORMULA
+          class Desktopinator < Formula
+            desc "Wayland tiling compositor for remote desktop (RDP/VNC)"
+            homepage "https://github.com/erewhon/desktopinator"
+            version "${VERSION}"
+            license "MIT"
+
+            on_linux do
+              on_arm do
+                url "https://github.com/erewhon/desktopinator/releases/download/v${VERSION}/desktopinator-linux-aarch64"
+                sha256 "${SHA_ARM}"
+              end
+
+              on_intel do
+                url "https://github.com/erewhon/desktopinator/releases/download/v${VERSION}/desktopinator-linux-x86_64"
+                sha256 "${SHA_X86}"
+              end
+            end
+
+            resource "dinatorctl" do
+              on_linux do
+                on_arm do
+                  url "https://github.com/erewhon/desktopinator/releases/download/v${VERSION}/dinatorctl-linux-aarch64"
+                  sha256 "${SHA_CTL_ARM}"
+                end
+
+                on_intel do
+                  url "https://github.com/erewhon/desktopinator/releases/download/v${VERSION}/dinatorctl-linux-x86_64"
+                  sha256 "${SHA_CTL_X86}"
+                end
+              end
+            end
+
+            def install
+              if Hardware::CPU.arm?
+                bin.install "desktopinator-linux-aarch64" => "desktopinator"
+              else
+                bin.install "desktopinator-linux-x86_64" => "desktopinator"
+              end
+
+              resource("dinatorctl").stage do
+                if Hardware::CPU.arm?
+                  bin.install "dinatorctl-linux-aarch64" => "dinatorctl"
+                else
+                  bin.install "dinatorctl-linux-x86_64" => "dinatorctl"
+                end
+              end
+            end
+
+            test do
+              assert_match "desktopinator", shell_output("#{bin}/desktopinator --help", 2)
+            end
+          end
+          FORMULA
+
+          sed -i 's/^          //' desktopinator.rb
+
+      - name: Update homebrew-tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/erewhon/homebrew-tap.git
+          mkdir -p homebrew-tap/Formula
+          cp desktopinator.rb homebrew-tap/Formula/desktopinator.rb
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/desktopinator.rb
+          git diff --cached --quiet || git commit -m "Brew formula update for desktopinator version v${{ steps.version.outputs.version }}"
+          git push

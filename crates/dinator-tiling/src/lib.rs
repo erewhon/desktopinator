@@ -478,6 +478,91 @@ impl Layout for CenteredMasterLayout {
     }
 }
 
+/// Stacked layout: windows are stacked vertically with title bar slots visible
+/// at the top, and the focused (first) window takes the remaining space below.
+/// Similar to i3's stacked mode.
+pub struct StackedLayout {
+    /// Height of each title bar slot in pixels.
+    pub tab_height: i32,
+    /// Gap in pixels around the edges.
+    pub gap: i32,
+}
+
+impl Default for StackedLayout {
+    fn default() -> Self {
+        Self {
+            tab_height: 24,
+            gap: 4,
+        }
+    }
+}
+
+impl Layout for StackedLayout {
+    fn name(&self) -> &str { "stacked" }
+
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap { self.gap = gap; true } else { false }
+    }
+
+    fn gap(&self) -> i32 { self.gap }
+
+    fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
+        if windows.is_empty() {
+            return Vec::new();
+        }
+
+        let g = self.gap;
+
+        if windows.len() == 1 {
+            return vec![Placement {
+                id: windows[0],
+                rect: Rect {
+                    x: area.x + g,
+                    y: area.y + g,
+                    width: area.width - 2 * g,
+                    height: area.height - 2 * g,
+                },
+            }];
+        }
+
+        let mut placements = Vec::with_capacity(windows.len());
+        let usable_w = area.width - 2 * g;
+
+        // Tab bar slots at the top for non-focused windows
+        let tab_count = windows.len() - 1;
+        let tabs_total_height = tab_count as i32 * self.tab_height;
+
+        // Focused window (first) gets the main area below the tabs
+        let main_y = area.y + g + tabs_total_height;
+        let main_h = area.height - 2 * g - tabs_total_height;
+        placements.push(Placement {
+            id: windows[0],
+            rect: Rect {
+                x: area.x + g,
+                y: main_y,
+                width: usable_w,
+                height: main_h.max(1),
+            },
+        });
+
+        // Non-focused windows get thin tab slots at the top
+        for (i, &id) in windows[1..].iter().enumerate() {
+            let y = area.y + g + i as i32 * self.tab_height;
+            placements.push(Placement {
+                id,
+                rect: Rect {
+                    x: area.x + g,
+                    y,
+                    width: usable_w,
+                    height: self.tab_height,
+                },
+            });
+        }
+
+        placements
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

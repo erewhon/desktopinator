@@ -34,7 +34,7 @@ use dinator_ipc::IpcEvent;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 
 use dinator_plugin_api::{PluginAction, PluginEvent, PluginRuntime, WindowRule};
-use dinator_tiling::{CenteredMasterLayout, ColumnLayout, DwindleLayout, Layout, MonocleLayout, Rect, WindowId};
+use dinator_tiling::{CenteredMasterLayout, ColumnLayout, DwindleLayout, Layout, MonocleLayout, StackedLayout, Rect, WindowId};
 
 /// Thread-safe broadcaster for IPC events.
 /// IPC client threads register their sender here; the compositor emits events.
@@ -885,6 +885,7 @@ impl DinatorState {
             "monocle" => Some(Box::new(MonocleLayout::default())),
             "dwindle" => Some(Box::new(DwindleLayout::default())),
             "centered" => Some(Box::new(CenteredMasterLayout::default())),
+            "stacked" => Some(Box::new(StackedLayout::default())),
             _ => {
                 if let Some(ref mut runtime) = self.plugin_runtime {
                     runtime.create_layout(name)
@@ -909,11 +910,30 @@ impl DinatorState {
             "monocle".to_string(),
             "dwindle".to_string(),
             "centered".to_string(),
+            "stacked".to_string(),
         ];
         if let Some(ref runtime) = self.plugin_runtime {
             names.extend(runtime.layout_names());
         }
         names
+    }
+
+    /// Cycle to the next layout (forward or backward).
+    pub fn cycle_layout(&mut self, direction: i32) -> Option<String> {
+        let layouts = self.available_layouts();
+        if layouts.is_empty() {
+            return None;
+        }
+        let current = self.layout_name();
+        let idx = layouts.iter().position(|n| n == current).unwrap_or(0);
+        let len = layouts.len() as i32;
+        let next_idx = ((idx as i32 + direction).rem_euclid(len)) as usize;
+        let next_name = layouts[next_idx].clone();
+        if self.set_layout(&next_name) {
+            Some(next_name)
+        } else {
+            None
+        }
     }
 
     // ---- Window state toggles ----
