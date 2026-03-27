@@ -569,18 +569,24 @@ impl DinatorState {
             .enumerate()
             .filter_map(|(i, &id)| {
                 let window = self.window_map.get(&id)?;
-                let (app_id, title) = Self::window_wl_surface(window)
-                    .map(|surface| {
-                        compositor::with_states(&surface, |states| {
-                            let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
-                            let attrs = attrs.map(|d| d.lock().unwrap());
-                            (
-                                attrs.as_ref().and_then(|a| a.app_id.clone()).unwrap_or_default(),
-                                attrs.as_ref().and_then(|a| a.title.clone()).unwrap_or_default(),
-                            )
+                // Try X11 surface first (has title/class directly),
+                // then fall back to XDG toplevel data
+                let (app_id, title) = if let Some(x11) = window.x11_surface() {
+                    (x11.class(), x11.title())
+                } else {
+                    Self::window_wl_surface(window)
+                        .map(|surface| {
+                            compositor::with_states(&surface, |states| {
+                                let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+                                let attrs = attrs.map(|d| d.lock().unwrap());
+                                (
+                                    attrs.as_ref().and_then(|a| a.app_id.clone()).unwrap_or_default(),
+                                    attrs.as_ref().and_then(|a| a.title.clone()).unwrap_or_default(),
+                                )
+                            })
                         })
-                    })
-                    .unwrap_or_default();
+                        .unwrap_or_default()
+                };
                 Some((app_id, title, i == 0))
             })
             .collect();

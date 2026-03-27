@@ -281,9 +281,25 @@ impl DinatorState {
         let smithay_window = Window::new_x11_window(window.clone());
         let ws = self.focused_workspace();
 
+        // Auto-float transient windows, dialogs, splashes, utilities, tooltips
+        use smithay::xwayland::xwm::WmWindowType;
+        let is_transient = window.is_transient_for().is_some();
+        let should_float = is_transient
+            || matches!(
+                window.window_type(),
+                Some(WmWindowType::Dialog)
+                    | Some(WmWindowType::Splash)
+                    | Some(WmWindowType::Utility)
+                    | Some(WmWindowType::Toolbar)
+                    | Some(WmWindowType::Notification)
+            );
+
         info!(
             title = ?window.title(),
             class = ?window.class(),
+            window_type = ?window.window_type(),
+            transient = is_transient,
+            float = should_float,
             id = id.0,
             "XWayland: window mapped"
         );
@@ -294,11 +310,24 @@ impl DinatorState {
         self.x11_surface_to_id.insert(window.window_id(), id);
         self.window_workspace.insert(id, ws);
 
+        if should_float {
+            self.floating.insert(id);
+        }
+
         let _ = window.set_activated(true);
 
         // Map and retile
         let output = self.get_focused_output();
-        self.space.map_element(smithay_window, (0, 0), false);
+        if should_float {
+            // Float at the window's requested geometry
+            let geo = window.geometry();
+            self.space.map_element(smithay_window, (geo.loc.x, geo.loc.y), false);
+            if let Some(w) = self.window_map.get(&id) {
+                self.space.raise_element(w, true);
+            }
+        } else {
+            self.space.map_element(smithay_window, (0, 0), false);
+        }
         if let Some(ref output) = output {
             output.enter(&wl_surface);
             self.retile(output);
