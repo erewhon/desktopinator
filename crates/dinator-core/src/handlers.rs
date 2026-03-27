@@ -321,21 +321,27 @@ impl XdgShellHandler for DinatorState {
         }
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        // TODO: popup support
+    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
+        // Send the initial configure so the popup can render
+        surface.send_configure().ok();
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // TODO: popup grabs
+        // Popup grabs not yet supported — menus still work without grab
     }
 
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
-        // TODO: popup repositioning
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
+        surface.send_repositioned(token);
+        surface.send_configure().ok();
     }
 }
 

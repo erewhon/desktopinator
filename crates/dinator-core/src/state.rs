@@ -10,7 +10,8 @@ use smithay::reexports::calloop::LoopSignal;
 use smithay::reexports::wayland_server::backend::ClientData;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
-use smithay::wayland::compositor::CompositorState;
+use smithay::wayland::compositor::{self, CompositorState};
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
@@ -538,6 +539,51 @@ impl DinatorState {
             .unwrap_or("column")
     }
 
+    /// Get the layout name for a specific output.
+    pub fn layout_name_for_output(&self, output: &Output) -> &str {
+        self.output_states
+            .get(&output.name())
+            .map(|s| s.layout.name())
+            .unwrap_or("column")
+    }
+
+    /// Return tab bar info for stacked layout: (app_id, title, x, y, w, h)
+    /// for each non-focused window in the tab area. Empty if not stacked layout.
+    pub fn stacked_tab_bars(&self, output: &Output) -> Vec<(String, String, i32, i32, i32, i32)> {
+        if self.layout_name_for_output(output) != "stacked" {
+            return Vec::new();
+        }
+        let ws = self.output_states.get(&output.name())
+            .map(|s| s.active_workspace)
+            .unwrap_or(1);
+        let ws_windows = self.ws_window_list(ws);
+        if ws_windows.len() < 2 {
+            return Vec::new();
+        }
+        // Non-focused windows are indices 1.. in stacked layout
+        let mut tabs = Vec::new();
+        for &id in &ws_windows[1..] {
+            if let Some(window) = self.window_map.get(&id) {
+                if let Some(geo) = self.space.element_geometry(window) {
+                    let (app_id, title) = Self::window_wl_surface(window)
+                        .map(|surface| {
+                            compositor::with_states(&surface, |states| {
+                                let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+                                let attrs = attrs.map(|d| d.lock().unwrap());
+                                (
+                                    attrs.as_ref().and_then(|a| a.app_id.clone()).unwrap_or_default(),
+                                    attrs.as_ref().and_then(|a| a.title.clone()).unwrap_or_default(),
+                                )
+                            })
+                        })
+                        .unwrap_or_default();
+                    tabs.push((app_id, title, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h));
+                }
+            }
+        }
+        tabs
+    }
+
     pub fn grow_master(&mut self) -> bool {
         self.focused_output
             .clone()
@@ -569,9 +615,12 @@ impl DinatorState {
             .unwrap_or(false)
     }
 
-    pub fn set_focused_layout(&mut self, layout: Box<dyn Layout>) {
+    pub fn set_focused_layout(&mut self, mut layout: Box<dyn Layout>) {
         if let Some(ref name) = self.focused_output {
             if let Some(state) = self.output_states.get_mut(name) {
+                // Preserve gap from previous layout
+                let prev_gap = state.layout.gap();
+                layout.set_gap(prev_gap);
                 state.layout = layout;
             }
         }
@@ -1166,6 +1215,21 @@ impl DinatorState {
                 let serial = smithay::utils::SERIAL_COUNTER.next_serial();
                 keyboard.set_focus(self, Some(surface), serial);
                 info!(idx = next_idx, "focus cycled");
+            }
+
+            // In stacked/monocle layouts, move the focused window to front
+            // so it gets the main area
+            if self.layout_name() == "stacked" || self.layout_name() == "monocle" {
+                let order = self.ws_window_list_mut(ws);
+                if let Some(pos) = order.iter().position(|w| *w == next_id) {
+                    if pos != 0 {
+                        let id = order.remove(pos);
+                        order.insert(0, id);
+                    }
+                }
+                if let Some(output) = self.get_focused_output() {
+                    self.retile(&output);
+                }
             }
         }
     }

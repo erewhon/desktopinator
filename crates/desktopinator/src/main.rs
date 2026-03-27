@@ -135,6 +135,47 @@ fn build_render_elements(
         }
     }
 
+    // Stacked layout: render title bars over non-focused tab windows
+    for (i, (_app_id, _title, x, y, w, h)) in state.stacked_tab_bars(output).iter().enumerate() {
+        let rel_x = x - output_geo.loc.x;
+        let rel_y = y - output_geo.loc.y;
+
+        // Tab background — subtle dark with slight variation per tab
+        let base = 0.18 + (i as f32 * 0.02).min(0.08);
+        let tab_bg_color = [base, base, base + 0.02, 1.0];
+        let tab_bg = SolidColorBuffer::new((*w, *h), tab_bg_color);
+        let tab_loc: Point<i32, Physical> = (rel_x, rel_y).into();
+        elements.insert(
+            0,
+            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                &tab_bg, tab_loc, 1.0, 1.0, Kind::Unspecified,
+            )),
+        );
+
+        // Accent stripe on the left edge
+        let accent_color = [0.4f32, 0.6, 0.9, 1.0];
+        let stripe_w = 3;
+        let stripe = SolidColorBuffer::new((stripe_w, *h), accent_color);
+        let stripe_loc: Point<i32, Physical> = (rel_x, rel_y).into();
+        elements.insert(
+            0,
+            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                &stripe, stripe_loc, 1.0, 1.0, Kind::Unspecified,
+            )),
+        );
+
+        // Bottom separator line
+        let sep_color = [0.12f32, 0.12, 0.14, 1.0];
+        let sep = SolidColorBuffer::new((*w, 1), sep_color);
+        let sep_loc: Point<i32, Physical> = (rel_x, rel_y + h - 1).into();
+        elements.insert(
+            0,
+            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                &sep, sep_loc, 1.0, 1.0, Kind::Unspecified,
+            )),
+        );
+    }
+
     // Render cursor as a small white square at pointer position (only on the output containing it)
     if let Some(pointer) = state.seat.get_pointer() {
         let pos = pointer.current_location();
