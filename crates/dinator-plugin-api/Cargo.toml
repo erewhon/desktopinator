@@ -1,6 +1,6 @@
 [package]
 name = "dinator-plugin-api"
-version = "0.1.0"
+version = "2026.3.26"
 edition = "2021"
 
 [dependencies]

@@ -1218,7 +1218,7 @@ dependencies = [
 
 [[package]]
 name = "desktopinator"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "dinator-core"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "calloop 0.14.4",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "dinator-encode"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "ffmpeg-next",
@@ -1295,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "dinator-ipc"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "serde",
  "serde_json",
@@ -1303,7 +1303,7 @@ dependencies = [
 
 [[package]]
 name = "dinator-lua"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "dinator-plugin-api",
@@ -1315,7 +1315,7 @@ dependencies = [
 
 [[package]]
 name = "dinator-plugin-api"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "dinator-tiling",
@@ -1327,11 +1327,11 @@ dependencies = [
 
 [[package]]
 name = "dinator-tiling"
-version = "0.1.0"
+version = "2026.3.26"
 
 [[package]]
 name = "dinator-wasm"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "dinator-plugin-api",
@@ -1345,7 +1345,7 @@ dependencies = [
 
 [[package]]
 name = "dinatorctl"
-version = "0.1.0"
+version = "2026.3.26"
 dependencies = [
  "anyhow",
  "dinator-ipc",
