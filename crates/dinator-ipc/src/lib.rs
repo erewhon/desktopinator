@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Default socket path: $XDG_RUNTIME_DIR/desktopinator.sock
 pub fn socket_path() -> std::path::PathBuf {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| "/tmp".to_string());
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     std::path::PathBuf::from(runtime_dir).join("desktopinator.sock")
 }
 
@@ -99,7 +98,11 @@ pub enum IpcEvent {
     /// A window was moved to a different workspace.
     WindowMovedWorkspace { id: u64, workspace: usize },
     /// A new output was created.
-    OutputCreated { name: String, width: u16, height: u16 },
+    OutputCreated {
+        name: String,
+        width: u16,
+        height: u16,
+    },
     /// An output was removed.
     OutputRemoved { name: String },
     /// An output gained focus.

@@ -19,12 +19,12 @@ use smithay::backend::renderer::gles::{GlesFrame, GlesRenderer};
 use smithay::desktop::layer_map_for_output;
 use smithay::desktop::space::SpaceRenderElements;
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::wayland::compositor;
-use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{EventLoop, Interest, PostAction};
 use smithay::reexports::wayland_server::{Display, ListeningSocket};
 use smithay::utils::{Physical, Point, Rectangle, Transform};
+use smithay::wayland::compositor;
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 use tracing::info;
 
 use dinator_core::DinatorState;
@@ -75,16 +75,14 @@ impl RenderElement<GlesRenderer> for OutputRenderElements {
     ) -> Result<(), smithay::backend::renderer::gles::GlesError> {
         match self {
             Self::Space(e) => e.draw(frame, src, dst, damage, opaque_regions),
-            Self::Border(e) => {
-                <SolidColorRenderElement as RenderElement<GlesRenderer>>::draw(
-                    e,
-                    frame,
-                    src,
-                    dst,
-                    damage,
-                    opaque_regions,
-                )
-            }
+            Self::Border(e) => <SolidColorRenderElement as RenderElement<GlesRenderer>>::draw(
+                e,
+                frame,
+                src,
+                dst,
+                damage,
+                opaque_regions,
+            ),
         }
     }
 }
@@ -95,11 +93,13 @@ fn build_render_elements(
     state: &DinatorState,
     output: &Output,
 ) -> Option<Vec<OutputRenderElements>> {
-    let space_elements: Vec<SpaceElements> =
-        match state.space.render_elements_for_output(renderer, output, 1.0) {
-            Ok(elements) => elements,
-            Err(_) => return None,
-        };
+    let space_elements: Vec<SpaceElements> = match state
+        .space
+        .render_elements_for_output(renderer, output, 1.0)
+    {
+        Ok(elements) => elements,
+        Err(_) => return None,
+    };
 
     let mut elements: Vec<OutputRenderElements> = space_elements
         .into_iter()
@@ -137,16 +137,16 @@ fn build_render_elements(
     // Render cursor as a small white square at pointer position (only on the output containing it)
     if let Some(pointer) = state.seat.get_pointer() {
         let pos = pointer.current_location();
-        let cursor_rect = Rectangle::new(
-            (pos.x as i32, pos.y as i32).into(),
-            (8, 8).into(),
-        );
+        let cursor_rect = Rectangle::new((pos.x as i32, pos.y as i32).into(), (8, 8).into());
         if output_geo.overlaps(cursor_rect) {
             let cursor_size = 8;
             let cursor_buf =
                 SolidColorBuffer::new((cursor_size, cursor_size), [1.0, 1.0, 1.0, 1.0]);
-            let cursor_loc: Point<i32, Physical> =
-                (pos.x as i32 - output_geo.loc.x, pos.y as i32 - output_geo.loc.y).into();
+            let cursor_loc: Point<i32, Physical> = (
+                pos.x as i32 - output_geo.loc.x,
+                pos.y as i32 - output_geo.loc.y,
+            )
+                .into();
             elements.insert(
                 0,
                 OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
@@ -161,7 +161,8 @@ fn build_render_elements(
     }
 
     // Render gradient background as horizontal bands (behind everything else)
-    if let dinator_core::Background::Gradient { top, bottom } = state.background_for_output(output) {
+    if let dinator_core::Background::Gradient { top, bottom } = state.background_for_output(output)
+    {
         if let Some(mode) = output.current_mode() {
             let height = mode.size.h;
             let num_bands = 64; // balance between smoothness and element count
@@ -249,7 +250,15 @@ fn main() -> anyhow::Result<()> {
             .unwrap_or(60);
 
         info!("starting desktopinator (headless)");
-        run_headless(width, height, vnc_port, rdp_port, encoder_pref, one_shot, fps)
+        run_headless(
+            width,
+            height,
+            vnc_port,
+            rdp_port,
+            encoder_pref,
+            one_shot,
+            fps,
+        )
     } else {
         info!("starting desktopinator (winit)");
         run_winit()
@@ -259,8 +268,8 @@ fn main() -> anyhow::Result<()> {
 fn run_winit() -> anyhow::Result<()> {
     use smithay::backend::winit::{self, WinitEvent};
 
-    let (mut backend, winit_evt_loop) = winit::init::<GlesRenderer>()
-        .map_err(|e| anyhow::anyhow!("winit init failed: {e:?}"))?;
+    let (mut backend, winit_evt_loop) =
+        winit::init::<GlesRenderer>().map_err(|e| anyhow::anyhow!("winit init failed: {e:?}"))?;
 
     info!("winit backend initialized");
 
@@ -307,7 +316,16 @@ fn run_winit() -> anyhow::Result<()> {
     let plugin_keybindings = init_plugins(&mut state);
     state.plugin_keybindings = plugin_keybindings
         .into_iter()
-        .map(|kb| (kb.keysym, kb.mods.0, kb.mods.1, kb.mods.2, kb.mods.3, kb.callback_id))
+        .map(|kb| {
+            (
+                kb.keysym,
+                kb.mods.0,
+                kb.mods.1,
+                kb.mods.2,
+                kb.mods.3,
+                kb.callback_id,
+            )
+        })
         .collect();
 
     output.create_global::<DinatorState>(&display_handle);
@@ -323,10 +341,7 @@ fn run_winit() -> anyhow::Result<()> {
             |_, socket, state| {
                 if let Some(stream) = socket.accept()? {
                     let client_state = Arc::new(dinator_core::ClientState::default());
-                    if let Err(e) = state
-                        .display_handle
-                        .insert_client(stream, client_state)
-                    {
+                    if let Err(e) = state.display_handle.insert_client(stream, client_state) {
                         tracing::error!("failed to insert client: {e}");
                     }
                 }
@@ -464,11 +479,22 @@ enum VncInputEvent {
 
 /// RDP input events bridged from the RDP server thread to the compositor event loop.
 enum RdpInputEvent {
-    MouseMove { x: u16, y: u16 },
-    MouseButton { button: u32, pressed: bool },
-    MouseScroll { value: i16 },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
+    MouseButton {
+        button: u32,
+        pressed: bool,
+    },
+    MouseScroll {
+        value: i16,
+    },
     /// Already converted to XKB keycode (evdev + 8)
-    Key { keycode: u32, pressed: bool },
+    Key {
+        keycode: u32,
+        pressed: bool,
+    },
     /// An RDP client connected (session takeover: new client gets existing session).
     ClientConnected,
     /// An RDP client disconnected. Used to release stuck keys and emit IPC events.
@@ -477,14 +503,22 @@ enum RdpInputEvent {
     Quit,
 }
 
-fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_pref: &str, one_shot: bool, fps: u32) -> anyhow::Result<()> {
+fn run_headless(
+    width: u16,
+    height: u16,
+    vnc_port: u16,
+    rdp_port: u16,
+    encoder_pref: &str,
+    one_shot: bool,
+    fps: u32,
+) -> anyhow::Result<()> {
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::egl::context::EGLContext;
     use smithay::backend::egl::native::EGLSurfacelessDisplay;
     use smithay::backend::egl::EGLDisplay;
+    use smithay::backend::input::KeyState;
     use smithay::backend::renderer::gles::GlesRenderbuffer;
     use smithay::backend::renderer::{Bind, ExportMem, Offscreen};
-    use smithay::backend::input::KeyState;
     use smithay::input::keyboard::{keysyms, FilterResult};
     use smithay::input::pointer::{ButtonEvent, MotionEvent};
     use smithay::reexports::calloop::channel::{self, Channel};
@@ -575,16 +609,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                             let _ = tx.send(VncInputEvent::ClientDisconnected);
                         }
                         ServerEvent::PointerMove {
-                            x,
-                            y,
-                            button_mask,
-                            ..
+                            x, y, button_mask, ..
                         } => {
-                            let _ = tx.send(VncInputEvent::PointerMove {
-                                x,
-                                y,
-                                button_mask,
-                            });
+                            let _ = tx.send(VncInputEvent::PointerMove { x, y, button_mask });
                         }
                         ServerEvent::KeyPress { key, down, .. } => {
                             let _ = tx.send(VncInputEvent::Key {
@@ -610,8 +637,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let (rdp_input_tx, rdp_input_rx): (channel::Sender<RdpInputEvent>, Channel<RdpInputEvent>) =
         channel::channel();
     // Shared sender for display updates — swapped each time a new RDP client connects
-    let rdp_update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
+    let rdp_update_tx: Arc<
+        tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>,
+    > = Arc::new(tokio::sync::Mutex::new(None));
 
     // Clipboard shared state for CLIPRDR
     let clipboard_state = Arc::new(std::sync::Mutex::new(clipboard::ClipboardState::default()));
@@ -625,12 +653,15 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let gfx_state_render = gfx_state.clone();
 
     // DisplayControl shared state for client-driven monitor layout
-    let dc_state = Arc::new(std::sync::Mutex::new(displaycontrol::DisplayControlState::default()));
+    let dc_state = Arc::new(std::sync::Mutex::new(
+        displaycontrol::DisplayControlState::default(),
+    ));
     let dc_state_handler = dc_state.clone();
     let dc_state_render = dc_state.clone();
     // ServerEvent sender — set once the RDP server is built
-    let rdp_event_tx: Arc<std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<ironrdp_server::ServerEvent>>>> =
-        Arc::new(std::sync::Mutex::new(None));
+    let rdp_event_tx: Arc<
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<ironrdp_server::ServerEvent>>>,
+    > = Arc::new(std::sync::Mutex::new(None));
     let rdp_event_tx_render = rdp_event_tx.clone();
     let rdp_event_tx_clipboard = rdp_event_tx.clone();
     let rdp_update_tx_adapter = rdp_update_tx.clone();
@@ -682,9 +713,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 input_tx: rdp_input_tx.clone(),
             };
             let quit_tx = rdp_input_tx.clone();
-            let input_handler = DinatorRdpInputHandler {
-                tx: rdp_input_tx,
-            };
+            let input_handler = DinatorRdpInputHandler { tx: rdp_input_tx };
             let tls_acceptor = match make_rdp_tls_acceptor() {
                 Ok(acceptor) => acceptor,
                 Err(e) => {
@@ -711,7 +740,8 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
             let dc_state_for_builder = dc_state_handler.clone();
             server.set_dvc_builder(move |dvc| {
                 let gfx_handler = gfx::GfxHandler::new(gfx_state_for_builder.clone());
-                let dc_handler = displaycontrol::DisplayControlDvc::new(dc_state_for_builder.clone());
+                let dc_handler =
+                    displaycontrol::DisplayControlDvc::new(dc_state_for_builder.clone());
                 dvc.with_dynamic_channel(gfx_handler)
                     .with_dynamic_channel(dc_handler)
             });
@@ -723,13 +753,19 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
             }
 
             if one_shot {
-                info!(port = rdp_port, "RDP server listening (one-shot, TLS, no auth, GFX/AVC420)");
+                info!(
+                    port = rdp_port,
+                    "RDP server listening (one-shot, TLS, no auth, GFX/AVC420)"
+                );
                 // One-shot: accept a single connection, then signal compositor to quit
                 let addr = std::net::SocketAddr::from(([0, 0, 0, 0], rdp_port));
                 let listener = tokio::net::TcpListener::bind(addr)
                     .await
                     .expect("failed to bind RDP port");
-                let (stream, peer) = listener.accept().await.expect("failed to accept RDP connection");
+                let (stream, peer) = listener
+                    .accept()
+                    .await
+                    .expect("failed to accept RDP connection");
                 info!(?peer, "RDP one-shot: client connected");
                 if let Err(e) = server.run_connection(stream).await {
                     tracing::error!(error = %e, "RDP connection error");
@@ -737,7 +773,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 info!("RDP one-shot: client disconnected, shutting down compositor");
                 let _ = quit_tx.send(RdpInputEvent::Quit);
             } else {
-                info!(port = rdp_port, "RDP server listening (TLS, no auth, GFX/AVC420)");
+                info!(
+                    port = rdp_port,
+                    "RDP server listening (TLS, no auth, GFX/AVC420)"
+                );
                 if let Err(e) = server.run().await {
                     tracing::error!(error = %e, "RDP server error");
                 }
@@ -789,7 +828,16 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let plugin_keybindings = init_plugins(&mut state);
     state.plugin_keybindings = plugin_keybindings
         .into_iter()
-        .map(|kb| (kb.keysym, kb.mods.0, kb.mods.1, kb.mods.2, kb.mods.3, kb.callback_id))
+        .map(|kb| {
+            (
+                kb.keysym,
+                kb.mods.0,
+                kb.mods.1,
+                kb.mods.2,
+                kb.mods.3,
+                kb.callback_id,
+            )
+        })
         .collect();
 
     // Set up clipboard sync callback (Wayland → RDP)
@@ -830,10 +878,7 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
             |_, socket, state| {
                 if let Some(stream) = socket.accept()? {
                     let client_state = Arc::new(dinator_core::ClientState::default());
-                    if let Err(e) = state
-                        .display_handle
-                        .insert_client(stream, client_state)
-                    {
+                    if let Err(e) = state.display_handle.insert_client(stream, client_state) {
                         tracing::error!("failed to insert client: {e}");
                     }
                 }
@@ -883,12 +928,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 return;
             };
             match event {
-                VncInputEvent::PointerMove {
-                    x,
-                    y,
-                    button_mask,
-                } => {
-                    let Some(pointer) = state.seat.get_pointer() else { return };
+                VncInputEvent::PointerMove { x, y, button_mask } => {
+                    let Some(pointer) = state.seat.get_pointer() else {
+                        return;
+                    };
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Pointer motion
@@ -957,7 +1000,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                     let window = window.clone();
                                     state.space.raise_element(&window, true);
                                     if let Some(toplevel) = window.toplevel() {
-                                        let Some(keyboard) = state.seat.get_keyboard() else { return };
+                                        let Some(keyboard) = state.seat.get_keyboard() else {
+                                            return;
+                                        };
                                         keyboard.set_focus(
                                             state,
                                             Some(toplevel.wl_surface().clone()),
@@ -975,7 +1020,9 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                     *pending_resize_input.lock().unwrap() = Some((width, height));
                 }
                 VncInputEvent::Key { keysym, pressed } => {
-                    let Some(keyboard) = state.seat.get_keyboard() else { return };
+                    let Some(keyboard) = state.seat.get_keyboard() else {
+                        return;
+                    };
                     let serial = SERIAL_COUNTER.next_serial();
 
                     // Convert X11 keysym to XKB keycode
@@ -1025,18 +1072,31 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                     }
 
                                     match sym.raw() {
-                                        keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
-                                        | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
-                                        | keysyms::KEY_h | keysyms::KEY_l
-                                        | keysyms::KEY_f | keysyms::KEY_v
-                                        | keysyms::KEY_m | keysyms::KEY_M
-                                        | keysyms::KEY_plus | keysyms::KEY_equal
+                                        keysyms::KEY_Return
+                                        | keysyms::KEY_d
+                                        | keysyms::KEY_j
+                                        | keysyms::KEY_k
+                                        | keysyms::KEY_q
+                                        | keysyms::KEY_Q
+                                        | keysyms::KEY_space
+                                        | keysyms::KEY_h
+                                        | keysyms::KEY_l
+                                        | keysyms::KEY_f
+                                        | keysyms::KEY_v
+                                        | keysyms::KEY_m
+                                        | keysyms::KEY_M
+                                        | keysyms::KEY_plus
+                                        | keysyms::KEY_equal
                                         | keysyms::KEY_minus
-                                        | keysyms::KEY_comma | keysyms::KEY_period
-                                        | keysyms::KEY_less | keysyms::KEY_greater => {
+                                        | keysyms::KEY_comma
+                                        | keysyms::KEY_period
+                                        | keysyms::KEY_less
+                                        | keysyms::KEY_greater => {
                                             if key_state == KeyState::Pressed {
                                                 let action = match sym.raw() {
-                                                    keysyms::KEY_Return => KeyAction::LaunchTerminal,
+                                                    keysyms::KEY_Return => {
+                                                        KeyAction::LaunchTerminal
+                                                    }
                                                     keysyms::KEY_d => KeyAction::LaunchLauncher,
                                                     keysyms::KEY_q => KeyAction::CloseWindow,
                                                     keysyms::KEY_Q => KeyAction::Quit,
@@ -1048,15 +1108,25 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                                     keysyms::KEY_f => KeyAction::ToggleFullscreen,
                                                     keysyms::KEY_v => KeyAction::ToggleFloat,
                                                     keysyms::KEY_m => KeyAction::CycleLayoutForward,
-                                                    keysyms::KEY_M => KeyAction::CycleLayoutBackward,
+                                                    keysyms::KEY_M => {
+                                                        KeyAction::CycleLayoutBackward
+                                                    }
                                                     keysyms::KEY_plus | keysyms::KEY_equal => {
                                                         KeyAction::ResolutionUp
                                                     }
                                                     keysyms::KEY_minus => KeyAction::ResolutionDown,
-                                                    keysyms::KEY_comma => KeyAction::FocusOutputLeft,
-                                                    keysyms::KEY_period => KeyAction::FocusOutputRight,
-                                                    keysyms::KEY_less => KeyAction::MoveToOutputLeft,
-                                                    keysyms::KEY_greater => KeyAction::MoveToOutputRight,
+                                                    keysyms::KEY_comma => {
+                                                        KeyAction::FocusOutputLeft
+                                                    }
+                                                    keysyms::KEY_period => {
+                                                        KeyAction::FocusOutputRight
+                                                    }
+                                                    keysyms::KEY_less => {
+                                                        KeyAction::MoveToOutputLeft
+                                                    }
+                                                    keysyms::KEY_greater => {
+                                                        KeyAction::MoveToOutputRight
+                                                    }
                                                     _ => unreachable!(),
                                                 };
                                                 return FilterResult::Intercept(Some(action));
@@ -1112,8 +1182,12 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                 KeyAction::FocusPrev => state.focus_prev(),
                                 KeyAction::FocusOutputLeft => state.focus_output_direction(-1),
                                 KeyAction::FocusOutputRight => state.focus_output_direction(1),
-                                KeyAction::MoveToOutputLeft => { state.move_window_to_output_direction(-1); }
-                                KeyAction::MoveToOutputRight => { state.move_window_to_output_direction(1); }
+                                KeyAction::MoveToOutputLeft => {
+                                    state.move_window_to_output_direction(-1);
+                                }
+                                KeyAction::MoveToOutputRight => {
+                                    state.move_window_to_output_direction(1);
+                                }
                                 KeyAction::SwapMaster => state.swap_master(),
                                 KeyAction::MasterGrow | KeyAction::MasterShrink => {
                                     let changed = if matches!(action, KeyAction::MasterGrow) {
@@ -1135,13 +1209,19 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                                     state.toggle_float();
                                 }
                                 KeyAction::CycleLayoutForward | KeyAction::CycleLayoutBackward => {
-                                    let dir = if matches!(action, KeyAction::CycleLayoutForward) { 1 } else { -1 };
+                                    let dir = if matches!(action, KeyAction::CycleLayoutForward) {
+                                        1
+                                    } else {
+                                        -1
+                                    };
                                     if let Some(name) = state.cycle_layout(dir) {
                                         let output = state.get_focused_output();
                                         if let Some(output) = output {
                                             state.retile(&output);
                                         }
-                                        state.emit_event(dinator_ipc::IpcEvent::LayoutChanged { name });
+                                        state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
+                                            name,
+                                        });
                                     }
                                 }
                                 KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
@@ -1189,7 +1269,10 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
                 }
                 VncInputEvent::ClientConnected => {
                     state.vnc_clients += 1;
-                    info!(clients = state.vnc_clients, "VNC: client connected (session takeover)");
+                    info!(
+                        clients = state.vnc_clients,
+                        "VNC: client connected (session takeover)"
+                    );
                     pressed_keys.clear();
                     state.emit_event(dinator_ipc::IpcEvent::ClientConnected {
                         protocol: "vnc".to_string(),
@@ -1229,330 +1312,394 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
         .insert_source(rdp_input_rx, {
             let mut rdp_pressed_keys = std::collections::HashSet::<u32>::new();
             move |event, _, state| {
-            let channel::Event::Msg(event) = event else {
-                return;
-            };
-            match event {
-                RdpInputEvent::MouseMove { x, y } => {
-                    let Some(pointer) = state.seat.get_pointer() else { return };
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let pos = (x as f64, y as f64);
-                    let under = state.space.element_under(pos);
-                    let surface_under = under.and_then(|(window, loc)| {
-                        use smithay::desktop::WindowSurfaceType;
-                        let rel = (pos.0 - loc.x as f64, pos.1 - loc.y as f64);
-                        window
-                            .surface_under(rel, WindowSurfaceType::ALL)
-                            .map(|(s, offset)| {
-                                (
+                let channel::Event::Msg(event) = event else {
+                    return;
+                };
+                match event {
+                    RdpInputEvent::MouseMove { x, y } => {
+                        let Some(pointer) = state.seat.get_pointer() else {
+                            return;
+                        };
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let pos = (x as f64, y as f64);
+                        let under = state.space.element_under(pos);
+                        let surface_under =
+                            under.and_then(|(window, loc)| {
+                                use smithay::desktop::WindowSurfaceType;
+                                let rel = (pos.0 - loc.x as f64, pos.1 - loc.y as f64);
+                                window.surface_under(rel, WindowSurfaceType::ALL).map(
+                                    |(s, offset)| {
+                                        (
                                     s,
                                     smithay::utils::Point::<f64, smithay::utils::Logical>::from((
                                         loc.x as f64 + offset.x as f64,
                                         loc.y as f64 + offset.y as f64,
                                     )),
                                 )
-                            })
-                    });
-                    pointer.motion(
-                        state,
-                        surface_under,
-                        &MotionEvent {
-                            location: pos.into(),
-                            serial,
-                            time: 0,
-                        },
-                    );
-                    pointer.frame(state);
-                }
-                RdpInputEvent::MouseButton { button, pressed } => {
-                    let Some(pointer) = state.seat.get_pointer() else { return };
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let btn_state = if pressed {
-                        smithay::backend::input::ButtonState::Pressed
-                    } else {
-                        smithay::backend::input::ButtonState::Released
-                    };
-                    pointer.button(
-                        state,
-                        &ButtonEvent {
-                            button,
-                            state: btn_state,
-                            serial,
-                            time: 0,
-                        },
-                    );
-                    pointer.frame(state);
-                    // Click to focus
-                    if pressed {
-                        let loc = pointer.current_location();
-                        if let Some((window, _)) = state.space.element_under(loc) {
-                            let window = window.clone();
-                            state.space.raise_element(&window, true);
-                            if let Some(toplevel) = window.toplevel() {
-                                let Some(keyboard) = state.seat.get_keyboard() else { return };
-                                keyboard.set_focus(
-                                    state,
-                                    Some(toplevel.wl_surface().clone()),
-                                    SERIAL_COUNTER.next_serial(),
-                                );
+                                    },
+                                )
+                            });
+                        pointer.motion(
+                            state,
+                            surface_under,
+                            &MotionEvent {
+                                location: pos.into(),
+                                serial,
+                                time: 0,
+                            },
+                        );
+                        pointer.frame(state);
+                    }
+                    RdpInputEvent::MouseButton { button, pressed } => {
+                        let Some(pointer) = state.seat.get_pointer() else {
+                            return;
+                        };
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let btn_state = if pressed {
+                            smithay::backend::input::ButtonState::Pressed
+                        } else {
+                            smithay::backend::input::ButtonState::Released
+                        };
+                        pointer.button(
+                            state,
+                            &ButtonEvent {
+                                button,
+                                state: btn_state,
+                                serial,
+                                time: 0,
+                            },
+                        );
+                        pointer.frame(state);
+                        // Click to focus
+                        if pressed {
+                            let loc = pointer.current_location();
+                            if let Some((window, _)) = state.space.element_under(loc) {
+                                let window = window.clone();
+                                state.space.raise_element(&window, true);
+                                if let Some(toplevel) = window.toplevel() {
+                                    let Some(keyboard) = state.seat.get_keyboard() else {
+                                        return;
+                                    };
+                                    keyboard.set_focus(
+                                        state,
+                                        Some(toplevel.wl_surface().clone()),
+                                        SERIAL_COUNTER.next_serial(),
+                                    );
+                                }
                             }
                         }
                     }
-                }
-                RdpInputEvent::MouseScroll { value } => {
-                    let Some(pointer) = state.seat.get_pointer() else { return };
-                    use smithay::backend::input::Axis;
-                    use smithay::input::pointer::AxisFrame;
-                    // RDP scroll values: positive = scroll down, negative = scroll up
-                    // Each RDP unit is 120 per notch; convert to reasonable pixel amounts
-                    let amount = value as f64 * 15.0 / 120.0;
-                    let mut frame = AxisFrame::new(0);
-                    frame = frame.value(Axis::Vertical, amount);
-                    pointer.axis(state, frame);
-                    pointer.frame(state);
-                }
-                RdpInputEvent::Key { keycode, pressed } => {
-                    // Filter out RDP client-side key repeats (duplicate presses)
-                    // The compositor handles its own key repeat via XKB
-                    if pressed {
-                        if !rdp_pressed_keys.insert(keycode) {
-                            return; // already pressed, skip repeat
-                        }
-                    } else {
-                        rdp_pressed_keys.remove(&keycode);
+                    RdpInputEvent::MouseScroll { value } => {
+                        let Some(pointer) = state.seat.get_pointer() else {
+                            return;
+                        };
+                        use smithay::backend::input::Axis;
+                        use smithay::input::pointer::AxisFrame;
+                        // RDP scroll values: positive = scroll down, negative = scroll up
+                        // Each RDP unit is 120 per notch; convert to reasonable pixel amounts
+                        let amount = value as f64 * 15.0 / 120.0;
+                        let mut frame = AxisFrame::new(0);
+                        frame = frame.value(Axis::Vertical, amount);
+                        pointer.axis(state, frame);
+                        pointer.frame(state);
                     }
+                    RdpInputEvent::Key { keycode, pressed } => {
+                        // Filter out RDP client-side key repeats (duplicate presses)
+                        // The compositor handles its own key repeat via XKB
+                        if pressed {
+                            if !rdp_pressed_keys.insert(keycode) {
+                                return; // already pressed, skip repeat
+                            }
+                        } else {
+                            rdp_pressed_keys.remove(&keycode);
+                        }
 
-                    let Some(keyboard) = state.seat.get_keyboard() else { return };
-                    let serial = SERIAL_COUNTER.next_serial();
-                    let key_state = if pressed {
-                        KeyState::Pressed
-                    } else {
-                        KeyState::Released
-                    };
-                    // Check for compositor keybindings (Alt+key)
-                    let plugin_bindings = state.plugin_keybindings.clone();
-                    let action = keyboard.input::<Option<KeyAction>, _>(
-                        state,
-                        keycode.into(),
-                        key_state,
-                        serial,
-                        0,
-                        |_state, modifiers, ksym| {
-                            let sym = ksym.modified_sym();
-                            if modifiers.alt {
-                                let ws = keysym_to_workspace(sym.raw());
-                                if let Some(n) = ws {
-                                    if key_state == KeyState::Pressed {
-                                        let action = if modifiers.shift {
-                                            KeyAction::MoveToWorkspace(n)
-                                        } else {
-                                            KeyAction::SwitchWorkspace(n)
-                                        };
-                                        return FilterResult::Intercept(Some(action));
-                                    } else {
-                                        return FilterResult::Intercept(None);
-                                    }
-                                }
-                                match sym.raw() {
-                                    keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
-                                    | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space
-                                    | keysyms::KEY_h | keysyms::KEY_l
-                                    | keysyms::KEY_f | keysyms::KEY_v
-                                    | keysyms::KEY_m | keysyms::KEY_M
-                                    | keysyms::KEY_plus | keysyms::KEY_equal
-                                    | keysyms::KEY_minus
-                                    | keysyms::KEY_comma | keysyms::KEY_period
-                                    | keysyms::KEY_less | keysyms::KEY_greater => {
+                        let Some(keyboard) = state.seat.get_keyboard() else {
+                            return;
+                        };
+                        let serial = SERIAL_COUNTER.next_serial();
+                        let key_state = if pressed {
+                            KeyState::Pressed
+                        } else {
+                            KeyState::Released
+                        };
+                        // Check for compositor keybindings (Alt+key)
+                        let plugin_bindings = state.plugin_keybindings.clone();
+                        let action = keyboard.input::<Option<KeyAction>, _>(
+                            state,
+                            keycode.into(),
+                            key_state,
+                            serial,
+                            0,
+                            |_state, modifiers, ksym| {
+                                let sym = ksym.modified_sym();
+                                if modifiers.alt {
+                                    let ws = keysym_to_workspace(sym.raw());
+                                    if let Some(n) = ws {
                                         if key_state == KeyState::Pressed {
-                                            let action = match sym.raw() {
-                                                keysyms::KEY_Return => KeyAction::LaunchTerminal,
-                                                keysyms::KEY_d => KeyAction::LaunchLauncher,
-                                                keysyms::KEY_q => KeyAction::CloseWindow,
-                                                keysyms::KEY_Q => KeyAction::Quit,
-                                                keysyms::KEY_j => KeyAction::FocusNext,
-                                                keysyms::KEY_k => KeyAction::FocusPrev,
-                                                keysyms::KEY_space => KeyAction::SwapMaster,
-                                                keysyms::KEY_h => KeyAction::MasterShrink,
-                                                keysyms::KEY_l => KeyAction::MasterGrow,
-                                                keysyms::KEY_f => KeyAction::ToggleFullscreen,
-                                                keysyms::KEY_v => KeyAction::ToggleFloat,
-                                                keysyms::KEY_m => KeyAction::CycleLayoutForward,
-                                                keysyms::KEY_M => KeyAction::CycleLayoutBackward,
-                                                keysyms::KEY_plus | keysyms::KEY_equal => {
-                                                    KeyAction::ResolutionUp
-                                                }
-                                                keysyms::KEY_minus => KeyAction::ResolutionDown,
-                                                keysyms::KEY_comma => KeyAction::FocusOutputLeft,
-                                                keysyms::KEY_period => KeyAction::FocusOutputRight,
-                                                keysyms::KEY_less => KeyAction::MoveToOutputLeft,
-                                                keysyms::KEY_greater => KeyAction::MoveToOutputRight,
-                                                _ => unreachable!(),
+                                            let action = if modifiers.shift {
+                                                KeyAction::MoveToWorkspace(n)
+                                            } else {
+                                                KeyAction::SwitchWorkspace(n)
                                             };
                                             return FilterResult::Intercept(Some(action));
                                         } else {
                                             return FilterResult::Intercept(None);
                                         }
                                     }
-                                    _ => {}
+                                    match sym.raw() {
+                                        keysyms::KEY_Return
+                                        | keysyms::KEY_d
+                                        | keysyms::KEY_j
+                                        | keysyms::KEY_k
+                                        | keysyms::KEY_q
+                                        | keysyms::KEY_Q
+                                        | keysyms::KEY_space
+                                        | keysyms::KEY_h
+                                        | keysyms::KEY_l
+                                        | keysyms::KEY_f
+                                        | keysyms::KEY_v
+                                        | keysyms::KEY_m
+                                        | keysyms::KEY_M
+                                        | keysyms::KEY_plus
+                                        | keysyms::KEY_equal
+                                        | keysyms::KEY_minus
+                                        | keysyms::KEY_comma
+                                        | keysyms::KEY_period
+                                        | keysyms::KEY_less
+                                        | keysyms::KEY_greater => {
+                                            if key_state == KeyState::Pressed {
+                                                let action = match sym.raw() {
+                                                    keysyms::KEY_Return => {
+                                                        KeyAction::LaunchTerminal
+                                                    }
+                                                    keysyms::KEY_d => KeyAction::LaunchLauncher,
+                                                    keysyms::KEY_q => KeyAction::CloseWindow,
+                                                    keysyms::KEY_Q => KeyAction::Quit,
+                                                    keysyms::KEY_j => KeyAction::FocusNext,
+                                                    keysyms::KEY_k => KeyAction::FocusPrev,
+                                                    keysyms::KEY_space => KeyAction::SwapMaster,
+                                                    keysyms::KEY_h => KeyAction::MasterShrink,
+                                                    keysyms::KEY_l => KeyAction::MasterGrow,
+                                                    keysyms::KEY_f => KeyAction::ToggleFullscreen,
+                                                    keysyms::KEY_v => KeyAction::ToggleFloat,
+                                                    keysyms::KEY_m => KeyAction::CycleLayoutForward,
+                                                    keysyms::KEY_M => {
+                                                        KeyAction::CycleLayoutBackward
+                                                    }
+                                                    keysyms::KEY_plus | keysyms::KEY_equal => {
+                                                        KeyAction::ResolutionUp
+                                                    }
+                                                    keysyms::KEY_minus => KeyAction::ResolutionDown,
+                                                    keysyms::KEY_comma => {
+                                                        KeyAction::FocusOutputLeft
+                                                    }
+                                                    keysyms::KEY_period => {
+                                                        KeyAction::FocusOutputRight
+                                                    }
+                                                    keysyms::KEY_less => {
+                                                        KeyAction::MoveToOutputLeft
+                                                    }
+                                                    keysyms::KEY_greater => {
+                                                        KeyAction::MoveToOutputRight
+                                                    }
+                                                    _ => unreachable!(),
+                                                };
+                                                return FilterResult::Intercept(Some(action));
+                                            } else {
+                                                return FilterResult::Intercept(None);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                 }
-                            }
-                            // Check plugin-registered keybindings
-                            for (ks, alt, ctrl, shift, logo, ref cb_id) in &plugin_bindings {
-                                if sym.raw() == *ks
-                                    && modifiers.alt == *alt
-                                    && modifiers.ctrl == *ctrl
-                                    && modifiers.shift == *shift
-                                    && modifiers.logo == *logo
-                                {
-                                    if key_state == KeyState::Pressed {
-                                        return FilterResult::Intercept(Some(
-                                            KeyAction::PluginCallback(cb_id.clone()),
-                                        ));
+                                // Check plugin-registered keybindings
+                                for (ks, alt, ctrl, shift, logo, ref cb_id) in &plugin_bindings {
+                                    if sym.raw() == *ks
+                                        && modifiers.alt == *alt
+                                        && modifiers.ctrl == *ctrl
+                                        && modifiers.shift == *shift
+                                        && modifiers.logo == *logo
+                                    {
+                                        if key_state == KeyState::Pressed {
+                                            return FilterResult::Intercept(Some(
+                                                KeyAction::PluginCallback(cb_id.clone()),
+                                            ));
+                                        } else {
+                                            return FilterResult::Intercept(None);
+                                        }
+                                    }
+                                }
+                                FilterResult::Forward
+                            },
+                        );
+                        if let Some(Some(action)) = action {
+                            match action {
+                                KeyAction::LaunchTerminal => {
+                                    info!("keybinding: launch terminal");
+                                    if let Err(e) = std::process::Command::new("foot").spawn() {
+                                        info!(error = %e, "failed to launch foot");
+                                    }
+                                }
+                                KeyAction::LaunchLauncher => {
+                                    info!("keybinding: launch fuzzel");
+                                    if let Err(e) = std::process::Command::new("fuzzel").spawn() {
+                                        info!(error = %e, "failed to launch fuzzel");
+                                    }
+                                }
+                                KeyAction::CloseWindow => {
+                                    info!("keybinding: close window");
+                                    state.close_focused_window();
+                                }
+                                KeyAction::FocusNext => state.focus_next(),
+                                KeyAction::FocusPrev => state.focus_prev(),
+                                KeyAction::FocusOutputLeft => state.focus_output_direction(-1),
+                                KeyAction::FocusOutputRight => state.focus_output_direction(1),
+                                KeyAction::MoveToOutputLeft => {
+                                    state.move_window_to_output_direction(-1);
+                                }
+                                KeyAction::MoveToOutputRight => {
+                                    state.move_window_to_output_direction(1);
+                                }
+                                KeyAction::SwapMaster => state.swap_master(),
+                                KeyAction::MasterGrow | KeyAction::MasterShrink => {
+                                    let changed = if matches!(action, KeyAction::MasterGrow) {
+                                        state.grow_master()
                                     } else {
-                                        return FilterResult::Intercept(None);
+                                        state.shrink_master()
+                                    };
+                                    if changed {
+                                        let output = state.get_focused_output();
+                                        if let Some(output) = output {
+                                            state.retile(&output);
+                                        }
                                     }
                                 }
-                            }
-                            FilterResult::Forward
-                        },
-                    );
-                    if let Some(Some(action)) = action {
-                        match action {
-                            KeyAction::LaunchTerminal => {
-                                info!("keybinding: launch terminal");
-                                if let Err(e) = std::process::Command::new("foot").spawn() {
-                                    info!(error = %e, "failed to launch foot");
+                                KeyAction::ToggleFullscreen => {
+                                    state.toggle_fullscreen();
                                 }
-                            }
-                            KeyAction::LaunchLauncher => {
-                                info!("keybinding: launch fuzzel");
-                                if let Err(e) = std::process::Command::new("fuzzel").spawn() {
-                                    info!(error = %e, "failed to launch fuzzel");
+                                KeyAction::ToggleFloat => {
+                                    state.toggle_float();
                                 }
-                            }
-                            KeyAction::CloseWindow => {
-                                info!("keybinding: close window");
-                                state.close_focused_window();
-                            }
-                            KeyAction::FocusNext => state.focus_next(),
-                            KeyAction::FocusPrev => state.focus_prev(),
-                            KeyAction::FocusOutputLeft => state.focus_output_direction(-1),
-                            KeyAction::FocusOutputRight => state.focus_output_direction(1),
-                            KeyAction::MoveToOutputLeft => { state.move_window_to_output_direction(-1); }
-                            KeyAction::MoveToOutputRight => { state.move_window_to_output_direction(1); }
-                            KeyAction::SwapMaster => state.swap_master(),
-                            KeyAction::MasterGrow | KeyAction::MasterShrink => {
-                                let changed = if matches!(action, KeyAction::MasterGrow) {
-                                    state.grow_master()
-                                } else {
-                                    state.shrink_master()
-                                };
-                                if changed {
-                                    let output = state.get_focused_output();
-                                    if let Some(output) = output {
-                                        state.retile(&output);
+                                KeyAction::CycleLayoutForward | KeyAction::CycleLayoutBackward => {
+                                    let dir = if matches!(action, KeyAction::CycleLayoutForward) {
+                                        1
+                                    } else {
+                                        -1
+                                    };
+                                    if let Some(name) = state.cycle_layout(dir) {
+                                        let output = state.get_focused_output();
+                                        if let Some(output) = output {
+                                            state.retile(&output);
+                                        }
+                                        state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
+                                            name,
+                                        });
                                     }
                                 }
-                            }
-                            KeyAction::ToggleFullscreen => { state.toggle_fullscreen(); }
-                            KeyAction::ToggleFloat => { state.toggle_float(); }
-                            KeyAction::CycleLayoutForward | KeyAction::CycleLayoutBackward => {
-                                let dir = if matches!(action, KeyAction::CycleLayoutForward) { 1 } else { -1 };
-                                if let Some(name) = state.cycle_layout(dir) {
-                                    let output = state.get_focused_output();
-                                    if let Some(output) = output {
-                                        state.retile(&output);
+                                KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
+                                    let dir = if matches!(action, KeyAction::ResolutionUp) {
+                                        1
+                                    } else {
+                                        -1
+                                    };
+                                    if let Some(mode) = output_for_rdp.current_mode() {
+                                        let (new_w, new_h) = next_resolution(
+                                            mode.size.w as u16,
+                                            mode.size.h as u16,
+                                            dir,
+                                        );
+                                        *pending_resize_rdp.lock().unwrap() = Some((new_w, new_h));
                                     }
-                                    state.emit_event(dinator_ipc::IpcEvent::LayoutChanged { name });
                                 }
-                            }
-                            KeyAction::ResolutionUp | KeyAction::ResolutionDown => {
-                                let dir = if matches!(action, KeyAction::ResolutionUp) { 1 } else { -1 };
-                                if let Some(mode) = output_for_rdp.current_mode() {
-                                    let (new_w, new_h) = next_resolution(
-                                        mode.size.w as u16,
-                                        mode.size.h as u16,
-                                        dir,
-                                    );
-                                    *pending_resize_rdp.lock().unwrap() = Some((new_w, new_h));
+                                KeyAction::PluginCallback(ref callback_id) => {
+                                    info!(callback = %callback_id, "plugin keybinding");
+                                    if let Some(ref mut runtime) = state.plugin_runtime {
+                                        runtime.invoke_callback(callback_id);
+                                    }
+                                    state.execute_plugin_actions();
                                 }
-                            }
-                            KeyAction::PluginCallback(ref callback_id) => {
-                                info!(callback = %callback_id, "plugin keybinding");
-                                if let Some(ref mut runtime) = state.plugin_runtime {
-                                    runtime.invoke_callback(callback_id);
+                                KeyAction::SwitchWorkspace(n) => state.switch_workspace(n),
+                                KeyAction::MoveToWorkspace(n) => state.move_to_workspace(n),
+                                KeyAction::Quit => {
+                                    info!("keybinding: quit");
+                                    state.loop_signal.stop();
                                 }
-                                state.execute_plugin_actions();
-                            }
-                            KeyAction::SwitchWorkspace(n) => state.switch_workspace(n),
-                            KeyAction::MoveToWorkspace(n) => state.move_to_workspace(n),
-                            KeyAction::Quit => {
-                                info!("keybinding: quit");
-                                state.loop_signal.stop();
                             }
                         }
                     }
-                }
-                RdpInputEvent::ClientConnected => {
-                    state.rdp_clients += 1;
-                    info!(clients = state.rdp_clients, "RDP: client connected (session takeover)");
-                    rdp_pressed_keys.clear();
-                    state.emit_event(dinator_ipc::IpcEvent::ClientConnected {
-                        protocol: "rdp".to_string(),
-                    });
-                }
-                RdpInputEvent::ClientDisconnected => {
-                    state.rdp_clients = state.rdp_clients.saturating_sub(1);
-                    info!(clients = state.rdp_clients, "RDP: client disconnected");
-                    // Release all held keys to prevent stuck modifiers
-                    if let Some(keyboard) = state.seat.get_keyboard() {
-                        let serial = SERIAL_COUNTER.next_serial();
-                        for &keycode in rdp_pressed_keys.iter() {
-                            keyboard.input::<(), _>(
-                                state,
-                                keycode.into(),
-                                KeyState::Released,
-                                serial,
-                                0,
-                                |_, _, _| FilterResult::Forward,
-                            );
+                    RdpInputEvent::ClientConnected => {
+                        state.rdp_clients += 1;
+                        info!(
+                            clients = state.rdp_clients,
+                            "RDP: client connected (session takeover)"
+                        );
+                        rdp_pressed_keys.clear();
+                        state.emit_event(dinator_ipc::IpcEvent::ClientConnected {
+                            protocol: "rdp".to_string(),
+                        });
+                    }
+                    RdpInputEvent::ClientDisconnected => {
+                        state.rdp_clients = state.rdp_clients.saturating_sub(1);
+                        info!(clients = state.rdp_clients, "RDP: client disconnected");
+                        // Release all held keys to prevent stuck modifiers
+                        if let Some(keyboard) = state.seat.get_keyboard() {
+                            let serial = SERIAL_COUNTER.next_serial();
+                            for &keycode in rdp_pressed_keys.iter() {
+                                keyboard.input::<(), _>(
+                                    state,
+                                    keycode.into(),
+                                    KeyState::Released,
+                                    serial,
+                                    0,
+                                    |_, _, _| FilterResult::Forward,
+                                );
+                            }
                         }
-                    }
-                    rdp_pressed_keys.clear();
+                        rdp_pressed_keys.clear();
 
-                    // Reset RDP desktop size to primary output dimensions so the
-                    // next client gets a sane initial size (GFX/DisplayControl
-                    // handle multi-monitor setup after connection).
-                    if let Some(primary) = state.space.outputs().next() {
-                        if let Some(mode) = primary.current_mode() {
-                            let pw = mode.size.w as u16;
-                            let ph = mode.size.h as u16;
-                            info!(width = pw, height = ph, "RDP: reset desktop size to primary output");
-                            rdp_width_input.store(pw, std::sync::atomic::Ordering::Relaxed);
-                            rdp_height_input.store(ph, std::sync::atomic::Ordering::Relaxed);
+                        // Reset RDP desktop size to primary output dimensions so the
+                        // next client gets a sane initial size (GFX/DisplayControl
+                        // handle multi-monitor setup after connection).
+                        if let Some(primary) = state.space.outputs().next() {
+                            if let Some(mode) = primary.current_mode() {
+                                let pw = mode.size.w as u16;
+                                let ph = mode.size.h as u16;
+                                info!(
+                                    width = pw,
+                                    height = ph,
+                                    "RDP: reset desktop size to primary output"
+                                );
+                                rdp_width_input.store(pw, std::sync::atomic::Ordering::Relaxed);
+                                rdp_height_input.store(ph, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
-                    }
 
-                    // Clear any pending DisplayControl layout from the old client
-                    if let Ok(mut dc) = dc_state_input.lock() {
-                        dc.pending_layout = None;
-                    }
+                        // Clear any pending DisplayControl layout from the old client
+                        if let Ok(mut dc) = dc_state_input.lock() {
+                            dc.pending_layout = None;
+                        }
 
-                    state.emit_event(dinator_ipc::IpcEvent::ClientDisconnected {
-                        protocol: "rdp".to_string(),
-                    });
-                }
-                RdpInputEvent::Quit => {
-                    info!("RDP one-shot: received quit signal");
-                    state.loop_signal.stop();
+                        state.emit_event(dinator_ipc::IpcEvent::ClientDisconnected {
+                            protocol: "rdp".to_string(),
+                        });
+                    }
+                    RdpInputEvent::Quit => {
+                        info!("RDP one-shot: received quit signal");
+                        state.loop_signal.stop();
+                    }
                 }
             }
-        }})
+        })
         .map_err(|e| anyhow::anyhow!("failed to insert RDP input source: {e}"))?;
 
     // Per-output render state: renderbuffer + damage tracker
-    let mut output_render_states: HashMap<String, (GlesRenderbuffer, OutputDamageTracker)> = HashMap::new();
-    output_render_states.insert(output.name(), (renderbuffer, OutputDamageTracker::from_output(&output)));
+    let mut output_render_states: HashMap<String, (GlesRenderbuffer, OutputDamageTracker)> =
+        HashMap::new();
+    output_render_states.insert(
+        output.name(),
+        (renderbuffer, OutputDamageTracker::from_output(&output)),
+    );
     let mut composite_width = width;
     let mut composite_height = height;
     let mut composite_buffer: Vec<u8> = vec![0u8; width as usize * height as usize * 4];
@@ -1565,7 +1712,11 @@ fn run_headless(width: u16, height: u16, vnc_port: u16, rdp_port: u16, encoder_p
     let mut gfx_frames_dropped: u64 = 0;
 
     let frame_interval = Duration::from_micros(1_000_000 / fps as u64);
-    info!(fps, interval_ms = frame_interval.as_secs_f64() * 1000.0, "render loop configured");
+    info!(
+        fps,
+        interval_ms = frame_interval.as_secs_f64() * 1000.0,
+        "render loop configured"
+    );
 
     // Timer-based redraw
     let timer = Timer::immediate();
@@ -2052,18 +2203,18 @@ fn spawn_xwayland(
     handle: &calloop::LoopHandle<'static, DinatorState>,
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
 ) -> anyhow::Result<()> {
-    use std::process::Stdio;
     use smithay::xwayland::{X11Wm, XWayland, XWaylandEvent};
+    use std::process::Stdio;
 
     let env_vars: Vec<(String, String)> = vec![];
     let (xwayland, xwayland_client) = XWayland::spawn(
         display_handle,
-        None::<u32>,   // auto-pick display number
-        env_vars,      // no extra env vars
-        true,          // open abstract socket
-        Stdio::piped(),  // stdout
-        Stdio::piped(),  // stderr
-        |_| {},          // user_data
+        None::<u32>,    // auto-pick display number
+        env_vars,       // no extra env vars
+        true,           // open abstract socket
+        Stdio::piped(), // stdout
+        Stdio::piped(), // stderr
+        |_| {},         // user_data
     )
     .context("failed to spawn XWayland")?;
 
@@ -2078,11 +2229,7 @@ fn spawn_xwayland(
                 info!(display = display_number, "XWayland ready");
                 std::env::set_var("DISPLAY", format!(":{display_number}"));
 
-                match X11Wm::start_wm(
-                    loop_handle.clone(),
-                    x11_socket,
-                    xwl_client.clone(),
-                ) {
+                match X11Wm::start_wm(loop_handle.clone(), x11_socket, xwl_client.clone()) {
                     Ok(wm) => {
                         state.x11_wm = Some(wm);
                         info!("X11 window manager started");
@@ -2172,7 +2319,13 @@ struct PluginKeybinding {
 fn apply_monitor_layout(
     monitors: &[displaycontrol::MonitorEntry],
     state: &mut DinatorState,
-    output_render_states: &mut HashMap<String, (smithay::backend::renderer::gles::GlesRenderbuffer, OutputDamageTracker)>,
+    output_render_states: &mut HashMap<
+        String,
+        (
+            smithay::backend::renderer::gles::GlesRenderbuffer,
+            OutputDamageTracker,
+        ),
+    >,
     h264_encoders: &mut HashMap<String, Box<dyn dinator_encode::Encoder>>,
     encoder_pref: &str,
     renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
@@ -2185,7 +2338,10 @@ fn apply_monitor_layout(
         return;
     }
 
-    info!(count = monitors.len(), "applying DisplayControl monitor layout");
+    info!(
+        count = monitors.len(),
+        "applying DisplayControl monitor layout"
+    );
 
     // Sort: primary first, then by position (left, top)
     let mut sorted: Vec<(usize, &displaycontrol::MonitorEntry)> =
@@ -2205,7 +2361,10 @@ fn apply_monitor_layout(
     for (i, (_, m)) in sorted.iter().enumerate() {
         let name = if i == 0 {
             // Primary monitor keeps the first existing output's name
-            current_names.first().cloned().unwrap_or_else(|| "headless-0".to_string())
+            current_names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "headless-0".to_string())
         } else {
             format!("rdp-{i}")
         };
@@ -2214,7 +2373,10 @@ fn apply_monitor_layout(
         target_outputs.push((name, m.left, m.top, w, h));
     }
 
-    let target_names: Vec<String> = target_outputs.iter().map(|(n, _, _, _, _)| n.clone()).collect();
+    let target_names: Vec<String> = target_outputs
+        .iter()
+        .map(|(n, _, _, _, _)| n.clone())
+        .collect();
 
     // Remove outputs not in target list
     let to_remove: Vec<Output> = state
@@ -2267,7 +2429,9 @@ fn apply_monitor_layout(
                         let dt = OutputDamageTracker::from_output(existing);
                         output_render_states.insert(name.clone(), (new_rb, dt));
                     }
-                    Err(e) => tracing::error!(output = %name, "failed to create renderbuffer: {e:?}"),
+                    Err(e) => {
+                        tracing::error!(output = %name, "failed to create renderbuffer: {e:?}")
+                    }
                 }
 
                 // Recreate encoder
@@ -2446,10 +2610,8 @@ fn init_plugins(state: &mut DinatorState) -> Vec<PluginKeybinding> {
     let plugin_dir = std::env::var("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
-            std::path::PathBuf::from(
-                std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
-            )
-            .join(".config")
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()))
+                .join(".config")
         })
         .join("desktopinator/plugins");
 
@@ -2613,14 +2775,15 @@ fn handle_ipc_command(
                             entry["height"] = geo.size.h.into();
                         }
                         if let Some(toplevel) = window.toplevel() {
-                            let (app_id, title) = compositor::with_states(toplevel.wl_surface(), |states| {
-                                let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
-                                let attrs = attrs.map(|d| d.lock().unwrap());
-                                (
-                                    attrs.as_ref().and_then(|a| a.app_id.clone()),
-                                    attrs.as_ref().and_then(|a| a.title.clone()),
-                                )
-                            });
+                            let (app_id, title) =
+                                compositor::with_states(toplevel.wl_surface(), |states| {
+                                    let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+                                    let attrs = attrs.map(|d| d.lock().unwrap());
+                                    (
+                                        attrs.as_ref().and_then(|a| a.app_id.clone()),
+                                        attrs.as_ref().and_then(|a| a.title.clone()),
+                                    )
+                                });
                             if let Some(app_id) = app_id {
                                 entry["app_id"] = app_id.into();
                             }
@@ -2643,9 +2806,7 @@ fn handle_ipc_command(
                 if let Some(output) = output {
                     state.retile(&output);
                 }
-                state.emit_event(dinator_ipc::IpcEvent::LayoutChanged {
-                    name: name.clone(),
-                });
+                state.emit_event(dinator_ipc::IpcEvent::LayoutChanged { name: name.clone() });
                 IpcResponse::Ok {
                     message: Some(format!("layout: {name}")),
                 }
@@ -2707,7 +2868,9 @@ fn handle_ipc_command(
                                 state.set_focused_layout(new_layout);
                                 info!("re-created plugin layout '{current_layout}' from reloaded plugin");
                             } else {
-                                state.set_focused_layout(Box::new(dinator_tiling::ColumnLayout::default()));
+                                state.set_focused_layout(Box::new(
+                                    dinator_tiling::ColumnLayout::default(),
+                                ));
                                 info!("active plugin layout '{current_layout}' no longer available, fell back to column");
                             }
                             let output = state.get_focused_output();
@@ -2747,7 +2910,11 @@ fn handle_ipc_command(
         }
         IpcCommand::ToggleFullscreen => {
             if let Some((id, is_fullscreen)) = state.toggle_fullscreen() {
-                info!(id = id.0, fullscreen = is_fullscreen, "IPC: toggle-fullscreen");
+                info!(
+                    id = id.0,
+                    fullscreen = is_fullscreen,
+                    "IPC: toggle-fullscreen"
+                );
                 IpcResponse::Ok {
                     message: Some(if is_fullscreen {
                         format!("window {} fullscreen", id.0)
@@ -2789,11 +2956,7 @@ fn handle_ipc_command(
             let active_ws = state.focused_workspace();
             let data: Vec<serde_json::Value> = (1..=9)
                 .map(|ws| {
-                    let count = state
-                        .workspace_order
-                        .get(&ws)
-                        .map(|v| v.len())
-                        .unwrap_or(0);
+                    let count = state.workspace_order.get(&ws).map(|v| v.len()).unwrap_or(0);
                     serde_json::json!({
                         "workspace": ws,
                         "windows": count,
@@ -2832,7 +2995,11 @@ fn handle_ipc_command(
                 },
             }
         }
-        IpcCommand::CreateOutput { name, width, height } => {
+        IpcCommand::CreateOutput {
+            name,
+            width,
+            height,
+        } => {
             info!(name = %name, width, height, "IPC: create-output");
             // Check if output already exists
             if state.output_states.contains_key(name.as_str()) {
@@ -2863,7 +3030,9 @@ fn handle_ipc_command(
             new_output.set_preferred(mode);
 
             // Position to the right of the last output
-            let x_offset: i32 = state.space.outputs()
+            let x_offset: i32 = state
+                .space
+                .outputs()
                 .filter_map(|o| state.space.output_geometry(o))
                 .map(|geo| geo.loc.x + geo.size.w)
                 .max()
@@ -2899,9 +3068,7 @@ fn handle_ipc_command(
                 };
             }
 
-            let output = state.space.outputs()
-                .find(|o| o.name() == *name)
-                .cloned();
+            let output = state.space.outputs().find(|o| o.name() == *name).cloned();
 
             if let Some(output) = output {
                 state.unregister_output(&output);
@@ -2917,7 +3084,9 @@ fn handle_ipc_command(
         }
         IpcCommand::ListOutputs => {
             let focused = state.focused_output.clone().unwrap_or_default();
-            let data: Vec<serde_json::Value> = state.space.outputs()
+            let data: Vec<serde_json::Value> = state
+                .space
+                .outputs()
                 .map(|o| {
                     let name = o.name();
                     let geo = state.space.output_geometry(o);
@@ -3096,7 +3265,8 @@ fn xkeysym_to_xkb_keycode(keysym: u32) -> Option<u32> {
 struct DinatorRdpDisplay {
     width: Arc<std::sync::atomic::AtomicU16>,
     height: Arc<std::sync::atomic::AtomicU16>,
-    update_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>>,
+    update_tx:
+        Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<ironrdp_server::DisplayUpdate>>>>,
     input_tx: calloop::channel::Sender<RdpInputEvent>,
 }
 
@@ -3130,7 +3300,9 @@ impl ironrdp_server::RdpServerDisplay for DinatorRdpDisplay {
         }
     }
 
-    async fn updates(&mut self) -> anyhow::Result<Box<dyn ironrdp_server::RdpServerDisplayUpdates>> {
+    async fn updates(
+        &mut self,
+    ) -> anyhow::Result<Box<dyn ironrdp_server::RdpServerDisplayUpdates>> {
         let (tx, rx) = tokio::sync::mpsc::channel(2);
         *self.update_tx.lock().await = Some(tx);
         let _ = self.input_tx.send(RdpInputEvent::ClientConnected);
@@ -3173,7 +3345,10 @@ impl ironrdp_server::RdpServerInputHandler for DinatorRdpInputHandler {
                 }
             }
             _ => {
-                tracing::debug!(?event, "RDP: unhandled keyboard event type (Unicode/Synchronize)");
+                tracing::debug!(
+                    ?event,
+                    "RDP: unhandled keyboard event type (Unicode/Synchronize)"
+                );
             }
         }
     }

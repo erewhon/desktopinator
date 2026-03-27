@@ -29,8 +29,8 @@ fn main() -> anyhow::Result<()> {
     let mut line = String::new();
     reader.read_line(&mut line)?;
 
-    let response: IpcResponse = serde_json::from_str(line.trim())
-        .context("failed to parse compositor response")?;
+    let response: IpcResponse =
+        serde_json::from_str(line.trim()).context("failed to parse compositor response")?;
 
     match &response {
         IpcResponse::Ok { message } => {
@@ -57,8 +57,8 @@ fn main() -> anyhow::Result<()> {
             if n == 0 {
                 break; // compositor closed connection
             }
-            let event: IpcEvent = serde_json::from_str(line.trim())
-                .context("failed to parse event")?;
+            let event: IpcEvent =
+                serde_json::from_str(line.trim()).context("failed to parse event")?;
             println!("{}", serde_json::to_string(&event)?);
         }
     }
@@ -102,10 +102,14 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
             if args.len() != 2 {
                 anyhow::bail!("usage: dinatorctl layout <column|monocle>");
             }
-            Ok(IpcCommand::SetLayout { name: args[1].clone() })
+            Ok(IpcCommand::SetLayout {
+                name: args[1].clone(),
+            })
         }
         "toggle-float" | "toggle_float" | "float" => Ok(IpcCommand::ToggleFloat),
-        "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => Ok(IpcCommand::ToggleFullscreen),
+        "toggle-fullscreen" | "toggle_fullscreen" | "fullscreen" => {
+            Ok(IpcCommand::ToggleFullscreen)
+        }
         "list-layouts" | "list_layouts" | "layouts" => Ok(IpcCommand::ListLayouts),
         "list-plugins" | "list_plugins" | "plugins" => Ok(IpcCommand::ListPlugins),
         "reload-plugins" | "reload_plugins" | "reload" => Ok(IpcCommand::ReloadPlugins),
@@ -135,11 +139,15 @@ fn parse_command(args: &[String]) -> anyhow::Result<IpcCommand> {
             if args.len() != 2 {
                 anyhow::bail!("usage: dinatorctl background SPEC\n  SPEC: #RRGGBB, r,g,b (0-255 or 0.0-1.0)\n  gradient: COLOR-COLOR (e.g. #000000-#0000ff)");
             }
-            Ok(IpcCommand::SetBackground { spec: args[1].clone() })
+            Ok(IpcCommand::SetBackground {
+                spec: args[1].clone(),
+            })
         }
         "output" => {
             if args.len() < 2 {
-                anyhow::bail!("usage: dinatorctl output <create|remove|list|focus|move-to> [args...]");
+                anyhow::bail!(
+                    "usage: dinatorctl output <create|remove|list|focus|move-to> [args...]"
+                );
             }
             match args[1].as_str() {
                 "create" => {

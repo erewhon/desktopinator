@@ -302,15 +302,31 @@ impl DinatorState {
         let title = window.title();
         self.emit_event(IpcEvent::WindowOpened {
             id: id.0,
-            app_id: if app_id.is_empty() { None } else { Some(app_id.clone()) },
-            title: if title.is_empty() { None } else { Some(title.clone()) },
+            app_id: if app_id.is_empty() {
+                None
+            } else {
+                Some(app_id.clone())
+            },
+            title: if title.is_empty() {
+                None
+            } else {
+                Some(title.clone())
+            },
         });
 
         // Apply window rules
         let rule = self
             .match_window_rule(
-                if app_id.is_empty() { None } else { Some(app_id.as_str()) },
-                if title.is_empty() { None } else { Some(title.as_str()) },
+                if app_id.is_empty() {
+                    None
+                } else {
+                    Some(app_id.as_str())
+                },
+                if title.is_empty() {
+                    None
+                } else {
+                    Some(title.as_str())
+                },
             )
             .cloned();
         if let Some(rule) = rule {

@@ -34,8 +34,14 @@ pub enum PluginEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum PluginAction {
-    Spawn { cmd: String, #[serde(default)] args: Vec<String> },
-    SetLayout { name: String },
+    Spawn {
+        cmd: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    SetLayout {
+        name: String,
+    },
     FocusNext,
     FocusPrev,
     CloseWindow,
@@ -43,9 +49,15 @@ pub enum PluginAction {
     ToggleFloat,
     ToggleFullscreen,
     /// Log a message from the plugin.
-    Log { message: String },
-    SwitchWorkspace { workspace: usize },
-    MoveToWorkspace { workspace: usize },
+    Log {
+        message: String,
+    },
+    SwitchWorkspace {
+        workspace: usize,
+    },
+    MoveToWorkspace {
+        workspace: usize,
+    },
 }
 
 /// A window rule that matches windows by criteria and applies actions.
@@ -199,10 +211,7 @@ impl PluginRuntime for CompositeRuntime {
     }
 
     fn plugin_info(&self) -> Vec<PluginInfo> {
-        self.runtimes
-            .iter()
-            .flat_map(|r| r.plugin_info())
-            .collect()
+        self.runtimes.iter().flat_map(|r| r.plugin_info()).collect()
     }
 
     fn reload(&mut self) -> anyhow::Result<()> {

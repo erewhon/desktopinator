@@ -2,12 +2,12 @@ use smithay::backend::input::{
     Axis, ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
     PointerButtonEvent, PointerMotionAbsoluteEvent,
 };
-use smithay::desktop::{WindowSurfaceType, layer_map_for_output};
-use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
+use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
 use smithay::input::keyboard::keysyms;
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::utils::SERIAL_COUNTER;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
 use tracing::info;
 
@@ -45,7 +45,9 @@ impl DinatorState {
         let keycode = event.key_code();
         let press_state = event.state();
 
-        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
 
         let plugin_bindings = self.plugin_keybindings.clone();
         let action = keyboard.input::<Option<KeyAction>, _>(
@@ -77,8 +79,13 @@ impl DinatorState {
                     }
 
                     match sym.raw() {
-                        keysyms::KEY_Return | keysyms::KEY_d | keysyms::KEY_j | keysyms::KEY_k
-                        | keysyms::KEY_q | keysyms::KEY_Q | keysyms::KEY_space => {
+                        keysyms::KEY_Return
+                        | keysyms::KEY_d
+                        | keysyms::KEY_j
+                        | keysyms::KEY_k
+                        | keysyms::KEY_q
+                        | keysyms::KEY_Q
+                        | keysyms::KEY_space => {
                             if press_state == KeyState::Pressed {
                                 let action = match sym.raw() {
                                     keysyms::KEY_Return => KeyAction::LaunchTerminal,
@@ -108,9 +115,9 @@ impl DinatorState {
                         && modifiers.logo == *logo
                     {
                         if press_state == KeyState::Pressed {
-                            return FilterResult::Intercept(Some(
-                                KeyAction::PluginCallback(cb_id.clone()),
-                            ));
+                            return FilterResult::Intercept(Some(KeyAction::PluginCallback(
+                                cb_id.clone(),
+                            )));
                         } else {
                             return FilterResult::Intercept(None);
                         }
@@ -172,7 +179,9 @@ impl DinatorState {
         let pos = event.position_transformed(output_geo.size);
         let serial = SERIAL_COUNTER.next_serial();
 
-        let Some(pointer) = self.seat.get_pointer() else { return };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
 
         // Check layer surfaces first (Overlay and Top layers take priority)
         let layer_map = layer_map_for_output(&output);
@@ -181,7 +190,9 @@ impl DinatorState {
             if let Some(layer_surface) = layer_map.layer_under(layer, pos) {
                 if let Some(geo) = layer_map.layer_geometry(layer_surface) {
                     let rel = (pos.x - geo.loc.x as f64, pos.y - geo.loc.y as f64);
-                    if let Some((s, offset)) = layer_surface.surface_under(rel, WindowSurfaceType::ALL) {
+                    if let Some((s, offset)) =
+                        layer_surface.surface_under(rel, WindowSurfaceType::ALL)
+                    {
                         surface_under = Some((
                             s,
                             smithay::utils::Point::<f64, smithay::utils::Logical>::from((
@@ -201,7 +212,8 @@ impl DinatorState {
             let under = self.space.element_under(pos);
             surface_under = under.and_then(|(window, loc)| {
                 let rel = (pos.x - loc.x as f64, pos.y - loc.y as f64);
-                window.surface_under(rel, WindowSurfaceType::ALL)
+                window
+                    .surface_under(rel, WindowSurfaceType::ALL)
                     .map(|(s, offset)| {
                         (
                             s,
@@ -228,7 +240,9 @@ impl DinatorState {
 
     fn handle_pointer_button<B: InputBackend>(&mut self, event: impl PointerButtonEvent<B>) {
         let serial = SERIAL_COUNTER.next_serial();
-        let Some(pointer) = self.seat.get_pointer() else { return };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
 
         pointer.button(
             self,
@@ -249,7 +263,9 @@ impl DinatorState {
                 let window = window.clone();
                 self.space.raise_element(&window, true);
                 if let Some(toplevel) = window.toplevel() {
-                    let Some(keyboard) = self.seat.get_keyboard() else { return };
+                    let Some(keyboard) = self.seat.get_keyboard() else {
+                        return;
+                    };
                     keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
                 }
             }
@@ -257,7 +273,9 @@ impl DinatorState {
     }
 
     fn handle_pointer_axis<B: InputBackend>(&mut self, event: impl PointerAxisEvent<B>) {
-        let Some(pointer) = self.seat.get_pointer() else { return };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
 
         let mut frame = AxisFrame::new(event.time_msec());
 

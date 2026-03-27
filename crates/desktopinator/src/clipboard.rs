@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use ironrdp_cliprdr::backend::{
-    CliprdrBackend, CliprdrBackendFactory, ClipboardMessage, ClipboardMessageProxy,
+    ClipboardMessage, ClipboardMessageProxy, CliprdrBackend, CliprdrBackendFactory,
 };
 use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest,
@@ -78,7 +78,10 @@ impl CliprdrBackend for DinatorCliprdrBackend {
         debug!("CLIPRDR: client requested format list");
     }
 
-    fn on_process_negotiated_capabilities(&mut self, capabilities: ClipboardGeneralCapabilityFlags) {
+    fn on_process_negotiated_capabilities(
+        &mut self,
+        capabilities: ClipboardGeneralCapabilityFlags,
+    ) {
         debug!(?capabilities, "CLIPRDR: negotiated capabilities");
     }
 

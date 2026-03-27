@@ -22,7 +22,12 @@ pub struct EncodedFrame {
 pub trait Encoder: Send {
     /// Encode a single frame. `bgra` is width*height*4 bytes in BGRA format.
     /// Returns encoded H.264 NAL units, or None if the encoder buffered the frame.
-    fn encode(&mut self, bgra: &[u8], width: u32, height: u32) -> anyhow::Result<Option<EncodedFrame>>;
+    fn encode(
+        &mut self,
+        bgra: &[u8],
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Option<EncodedFrame>>;
 
     /// Force a keyframe on the next encode call.
     fn force_keyframe(&mut self);
@@ -52,7 +57,9 @@ pub(crate) fn bgra_to_i420(bgra: &[u8], width: u32, height: u32, yuv: &mut [u8])
             let b = bgra[px] as i32;
             let g = bgra[px + 1] as i32;
             let r = bgra[px + 2] as i32;
-            y_plane[row * w + col] = ((66 * r + 129 * g + 25 * b + 128) >> 8).wrapping_add(16).clamp(0, 255) as u8;
+            y_plane[row * w + col] = ((66 * r + 129 * g + 25 * b + 128) >> 8)
+                .wrapping_add(16)
+                .clamp(0, 255) as u8;
         }
     }
 
@@ -76,8 +83,12 @@ pub(crate) fn bgra_to_i420(bgra: &[u8], width: u32, height: u32, yuv: &mut [u8])
             let g = g_sum / 4;
             let b = b_sum / 4;
             let uv_idx = (row / 2) * (w / 2) + col / 2;
-            u_plane[uv_idx] = ((-38 * r - 74 * g + 112 * b + 128) >> 8).wrapping_add(128).clamp(0, 255) as u8;
-            v_plane[uv_idx] = ((112 * r - 94 * g - 18 * b + 128) >> 8).wrapping_add(128).clamp(0, 255) as u8;
+            u_plane[uv_idx] = ((-38 * r - 74 * g + 112 * b + 128) >> 8)
+                .wrapping_add(128)
+                .clamp(0, 255) as u8;
+            v_plane[uv_idx] = ((112 * r - 94 * g - 18 * b + 128) >> 8)
+                .wrapping_add(128)
+                .clamp(0, 255) as u8;
         }
     }
 }

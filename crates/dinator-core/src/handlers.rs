@@ -7,10 +7,11 @@ use smithay::delegate_output;
 use smithay::delegate_seat;
 use smithay::delegate_shm;
 use smithay::delegate_xdg_shell;
-use smithay::desktop::{Window, WindowSurfaceType, layer_map_for_output};
+use smithay::desktop::{layer_map_for_output, Window, WindowSurfaceType};
 use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_buffer;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
@@ -19,15 +20,14 @@ use smithay::utils::{Serial, SERIAL_COUNTER};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState};
 use smithay::wayland::output::OutputHandler;
-use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-};
-use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
-use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::wayland::selection::data_device::{
     self, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
 };
 use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
+use smithay::wayland::shell::xdg::{
+    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use tracing::info;
@@ -148,8 +148,7 @@ impl XdgShellHandler for DinatorState {
         let ws = self.focused_workspace();
 
         self.window_map.insert(id, window.clone());
-        self.surface_to_id
-            .insert(surface.wl_surface().clone(), id);
+        self.surface_to_id.insert(surface.wl_surface().clone(), id);
         self.window_workspace.insert(id, ws);
         self.ws_window_list_mut(ws).push(id);
 
@@ -195,10 +194,9 @@ impl XdgShellHandler for DinatorState {
         });
 
         // Apply window rules
-        let rule = self.match_window_rule(
-            app_id.as_deref(),
-            title.as_deref(),
-        ).cloned();
+        let rule = self
+            .match_window_rule(app_id.as_deref(), title.as_deref())
+            .cloned();
         if let Some(rule) = rule {
             if rule.float {
                 info!(app_id = ?app_id, "window rule: auto-float");
@@ -231,7 +229,11 @@ impl XdgShellHandler for DinatorState {
             }
         }
 
-        self.emit_event(IpcEvent::WindowOpened { id: id.0, app_id, title });
+        self.emit_event(IpcEvent::WindowOpened {
+            id: id.0,
+            app_id,
+            title,
+        });
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
@@ -461,13 +463,19 @@ impl SelectionHandler for DinatorState {
 
         // Serve RDP clipboard text to Wayland apps
         if let Some(ref text) = self.rdp_clipboard_text {
-            if mime_type.starts_with("text/plain") || mime_type == "UTF8_STRING" || mime_type == "STRING" {
+            if mime_type.starts_with("text/plain")
+                || mime_type == "UTF8_STRING"
+                || mime_type == "STRING"
+            {
                 use std::io::Write;
                 let mut file = std::fs::File::from(fd);
                 if let Err(e) = file.write_all(text.as_bytes()) {
                     tracing::warn!(error = %e, "clipboard: failed to write to fd");
                 }
-                tracing::debug!(text_len = text.len(), "clipboard: served RDP text to Wayland app");
+                tracing::debug!(
+                    text_len = text.len(),
+                    "clipboard: served RDP text to Wayland app"
+                );
             }
         }
     }
@@ -488,7 +496,9 @@ delegate_data_device!(DinatorState);
 
 // --- Primary Selection ---
 
-use smithay::wayland::selection::primary_selection::{PrimarySelectionHandler, PrimarySelectionState};
+use smithay::wayland::selection::primary_selection::{
+    PrimarySelectionHandler, PrimarySelectionState,
+};
 
 impl PrimarySelectionHandler for DinatorState {
     fn primary_selection_state(&self) -> &PrimarySelectionState {
@@ -525,11 +535,7 @@ impl XdgActivationHandler for DinatorState {
                     if let Some(toplevel) = window.toplevel() {
                         let serial = SERIAL_COUNTER.next_serial();
                         if let Some(keyboard) = self.seat.get_keyboard() {
-                            keyboard.set_focus(
-                                self,
-                                Some(toplevel.wl_surface().clone()),
-                                serial,
-                            );
+                            keyboard.set_focus(self, Some(toplevel.wl_surface().clone()), serial);
                         }
                     }
                 }
@@ -667,12 +673,7 @@ impl WlrLayerShellHandler for DinatorState {
         }
     }
 
-    fn ack_configure(
-        &mut self,
-        _surface: WlSurface,
-        _configure: LayerSurfaceConfigure,
-    ) {
-    }
+    fn ack_configure(&mut self, _surface: WlSurface, _configure: LayerSurfaceConfigure) {}
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
         // Search all outputs for this layer surface

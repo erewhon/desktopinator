@@ -7,8 +7,8 @@ use mlua::prelude::*;
 use tracing::{info, warn};
 
 use dinator_plugin_api::{
-    KeybindingRequest, PluginAction, PluginEvent, PluginInfo, PluginRuntime, RawPluginManifest,
-    WindowRule, parse_lua_manifest,
+    parse_lua_manifest, KeybindingRequest, PluginAction, PluginEvent, PluginInfo, PluginRuntime,
+    RawPluginManifest, WindowRule,
 };
 use dinator_tiling::{Layout, Placement, Rect, WindowId};
 
@@ -68,7 +68,8 @@ impl LuaRuntime {
         let lua = Lua::new_with(
             LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH | LuaStdLib::UTF8,
             LuaOptions::default(),
-        ).map_err(lua_err)?;
+        )
+        .map_err(lua_err)?;
 
         // 64 MB memory limit
         let _ = lua.set_memory_limit(64 * 1024 * 1024);
@@ -95,7 +96,12 @@ impl LuaRuntime {
         // Execute the plugin source.
         // The Lua VM is NOT behind RefCell, so callbacks can borrow_mut the data
         // while exec() is running without hitting a borrow conflict.
-        state.lua.load(source).set_name(&plugin_id).exec().map_err(lua_err)?;
+        state
+            .lua
+            .load(source)
+            .set_name(&plugin_id)
+            .exec()
+            .map_err(lua_err)?;
 
         info!(plugin = %plugin_id, "loaded Lua plugin");
         self.plugins.push(state);
@@ -108,167 +114,225 @@ impl LuaRuntime {
         // desktopinator.register_layout(name, arrange_fn)
         {
             let state_ref = Rc::clone(state);
-            let register_layout = state.lua.create_function(
-                move |_lua, (name, func): (String, LuaFunction)| {
+            let register_layout = state
+                .lua
+                .create_function(move |_lua, (name, func): (String, LuaFunction)| {
                     let mut data = state_ref.data.borrow_mut();
                     let key = state_ref.lua.create_registry_value(func)?;
                     data.layout_fns.insert(name, key);
                     Ok(())
-                },
-            ).map_err(lua_err)?;
-            dt.set("register_layout", register_layout).map_err(lua_err)?;
+                })
+                .map_err(lua_err)?;
+            dt.set("register_layout", register_layout)
+                .map_err(lua_err)?;
         }
 
         // desktopinator.on(event_name, handler_fn)
         {
             let state_ref = Rc::clone(state);
-            let on_event = state.lua.create_function(
-                move |_lua, (event_name, func): (String, LuaFunction)| {
+            let on_event = state
+                .lua
+                .create_function(move |_lua, (event_name, func): (String, LuaFunction)| {
                     let mut data = state_ref.data.borrow_mut();
                     let key = state_ref.lua.create_registry_value(func)?;
-                    data.event_handlers
-                        .entry(event_name)
-                        .or_default()
-                        .push(key);
+                    data.event_handlers.entry(event_name).or_default().push(key);
                     Ok(())
-                },
-            ).map_err(lua_err)?;
+                })
+                .map_err(lua_err)?;
             dt.set("on", on_event).map_err(lua_err)?;
         }
 
         // desktopinator.bind(mods_table, key, callback_fn)
         {
             let state_ref = Rc::clone(state);
-            let bind = state.lua.create_function(
-                move |_lua, (mods, key, func): (LuaTable, String, LuaFunction)| {
-                    let mut data = state_ref.data.borrow_mut();
-                    let modifiers: Vec<String> = mods
-                        .sequence_values::<String>()
-                        .collect::<LuaResult<Vec<_>>>()?;
+            let bind = state
+                .lua
+                .create_function(
+                    move |_lua, (mods, key, func): (LuaTable, String, LuaFunction)| {
+                        let mut data = state_ref.data.borrow_mut();
+                        let modifiers: Vec<String> = mods
+                            .sequence_values::<String>()
+                            .collect::<LuaResult<Vec<_>>>()?;
 
-                    let callback_id =
-                        format!("{}:{}+{}", data.manifest.id, modifiers.join("+"), key);
-                    let reg_key = state_ref.lua.create_registry_value(func)?;
-                    data.callbacks.insert(callback_id.clone(), reg_key);
-                    data.keybinding_requests.push(KeybindingRequest {
-                        modifiers,
-                        key,
-                        callback_id,
-                    });
-                    Ok(())
-                },
-            ).map_err(lua_err)?;
+                        let callback_id =
+                            format!("{}:{}+{}", data.manifest.id, modifiers.join("+"), key);
+                        let reg_key = state_ref.lua.create_registry_value(func)?;
+                        data.callbacks.insert(callback_id.clone(), reg_key);
+                        data.keybinding_requests.push(KeybindingRequest {
+                            modifiers,
+                            key,
+                            callback_id,
+                        });
+                        Ok(())
+                    },
+                )
+                .map_err(lua_err)?;
             dt.set("bind", bind).map_err(lua_err)?;
         }
 
         // desktopinator.log(msg)
         {
-            let log_fn = state.lua.create_function(|_lua, msg: String| {
-                info!(plugin_log = %msg);
-                Ok(())
-            }).map_err(lua_err)?;
+            let log_fn = state
+                .lua
+                .create_function(|_lua, msg: String| {
+                    info!(plugin_log = %msg);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("log", log_fn).map_err(lua_err)?;
         }
 
         // desktopinator.spawn(cmd, args?)
         {
             let state_ref = Rc::clone(state);
-            let spawn_fn = state.lua.create_function(
-                move |_lua, (cmd, args): (String, Option<LuaTable>)| {
+            let spawn_fn = state
+                .lua
+                .create_function(move |_lua, (cmd, args): (String, Option<LuaTable>)| {
                     let args_vec = if let Some(tbl) = args {
                         tbl.sequence_values::<String>()
                             .collect::<LuaResult<Vec<_>>>()?
                     } else {
                         Vec::new()
                     };
-                    state_ref.data.borrow_mut().action_queue.push(
-                        PluginAction::Spawn { cmd, args: args_vec },
-                    );
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::Spawn {
+                            cmd,
+                            args: args_vec,
+                        });
                     Ok(())
-                },
-            ).map_err(lua_err)?;
+                })
+                .map_err(lua_err)?;
             dt.set("spawn", spawn_fn).map_err(lua_err)?;
         }
 
         // desktopinator.set_layout(name)
         {
             let state_ref = Rc::clone(state);
-            let set_layout_fn = state.lua.create_function(
-                move |_lua, name: String| {
-                    state_ref.data.borrow_mut().action_queue.push(
-                        PluginAction::SetLayout { name },
-                    );
+            let set_layout_fn = state
+                .lua
+                .create_function(move |_lua, name: String| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::SetLayout { name });
                     Ok(())
-                },
-            ).map_err(lua_err)?;
+                })
+                .map_err(lua_err)?;
             dt.set("set_layout", set_layout_fn).map_err(lua_err)?;
         }
 
         // desktopinator.focus_next()
         {
             let state_ref = Rc::clone(state);
-            let fn_ = state.lua.create_function(move |_lua, ()| {
-                state_ref.data.borrow_mut().action_queue.push(PluginAction::FocusNext);
-                Ok(())
-            }).map_err(lua_err)?;
+            let fn_ = state
+                .lua
+                .create_function(move |_lua, ()| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::FocusNext);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("focus_next", fn_).map_err(lua_err)?;
         }
 
         // desktopinator.focus_prev()
         {
             let state_ref = Rc::clone(state);
-            let fn_ = state.lua.create_function(move |_lua, ()| {
-                state_ref.data.borrow_mut().action_queue.push(PluginAction::FocusPrev);
-                Ok(())
-            }).map_err(lua_err)?;
+            let fn_ = state
+                .lua
+                .create_function(move |_lua, ()| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::FocusPrev);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("focus_prev", fn_).map_err(lua_err)?;
         }
 
         // desktopinator.close_window()
         {
             let state_ref = Rc::clone(state);
-            let fn_ = state.lua.create_function(move |_lua, ()| {
-                state_ref.data.borrow_mut().action_queue.push(PluginAction::CloseWindow);
-                Ok(())
-            }).map_err(lua_err)?;
+            let fn_ = state
+                .lua
+                .create_function(move |_lua, ()| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::CloseWindow);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("close_window", fn_).map_err(lua_err)?;
         }
 
         // desktopinator.swap_master()
         {
             let state_ref = Rc::clone(state);
-            let fn_ = state.lua.create_function(move |_lua, ()| {
-                state_ref.data.borrow_mut().action_queue.push(PluginAction::SwapMaster);
-                Ok(())
-            }).map_err(lua_err)?;
+            let fn_ = state
+                .lua
+                .create_function(move |_lua, ()| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::SwapMaster);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("swap_master", fn_).map_err(lua_err)?;
         }
 
         // desktopinator.toggle_float()
         {
             let state_ref = Rc::clone(state);
-            let fn_ = state.lua.create_function(move |_lua, ()| {
-                state_ref.data.borrow_mut().action_queue.push(PluginAction::ToggleFloat);
-                Ok(())
-            }).map_err(lua_err)?;
+            let fn_ = state
+                .lua
+                .create_function(move |_lua, ()| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::ToggleFloat);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("toggle_float", fn_).map_err(lua_err)?;
         }
 
         // desktopinator.toggle_fullscreen()
         {
             let state_ref = Rc::clone(state);
-            let fn_ = state.lua.create_function(move |_lua, ()| {
-                state_ref.data.borrow_mut().action_queue.push(PluginAction::ToggleFullscreen);
-                Ok(())
-            }).map_err(lua_err)?;
+            let fn_ = state
+                .lua
+                .create_function(move |_lua, ()| {
+                    state_ref
+                        .data
+                        .borrow_mut()
+                        .action_queue
+                        .push(PluginAction::ToggleFullscreen);
+                    Ok(())
+                })
+                .map_err(lua_err)?;
             dt.set("toggle_fullscreen", fn_).map_err(lua_err)?;
         }
 
         // desktopinator.window_rule({ app_id = "...", title = "...", float = true, fullscreen = false })
         {
             let state_ref = Rc::clone(state);
-            let window_rule_fn = state.lua.create_function(
-                move |_lua, tbl: LuaTable| {
+            let window_rule_fn = state
+                .lua
+                .create_function(move |_lua, tbl: LuaTable| {
                     let app_id: Option<String> = tbl.get("app_id").ok();
                     let title: Option<String> = tbl.get("title").ok();
                     let float: bool = tbl.get("float").unwrap_or(false);
@@ -280,12 +344,16 @@ impl LuaRuntime {
                         fullscreen,
                     });
                     Ok(())
-                },
-            ).map_err(lua_err)?;
+                })
+                .map_err(lua_err)?;
             dt.set("window_rule", window_rule_fn).map_err(lua_err)?;
         }
 
-        state.lua.globals().set("desktopinator", dt).map_err(lua_err)?;
+        state
+            .lua
+            .globals()
+            .set("desktopinator", dt)
+            .map_err(lua_err)?;
 
         Ok(())
     }
@@ -391,32 +459,28 @@ impl PluginRuntime for LuaRuntime {
                                 let _ = tbl.set("title", title.as_str());
                             }
                         }
-                        tbl.map(LuaValue::Table)
-                            .unwrap_or(LuaValue::Nil)
+                        tbl.map(LuaValue::Table).unwrap_or(LuaValue::Nil)
                     }
                     PluginEvent::WindowClosed { id } | PluginEvent::WindowFocused { id } => {
                         let tbl = plugin.lua.create_table().ok();
                         if let Some(tbl) = &tbl {
                             let _ = tbl.set("id", *id);
                         }
-                        tbl.map(LuaValue::Table)
-                            .unwrap_or(LuaValue::Nil)
+                        tbl.map(LuaValue::Table).unwrap_or(LuaValue::Nil)
                     }
                     PluginEvent::LayoutChanged { name } => {
                         let tbl = plugin.lua.create_table().ok();
                         if let Some(tbl) = &tbl {
                             let _ = tbl.set("name", name.as_str());
                         }
-                        tbl.map(LuaValue::Table)
-                            .unwrap_or(LuaValue::Nil)
+                        tbl.map(LuaValue::Table).unwrap_or(LuaValue::Nil)
                     }
                     PluginEvent::WorkspaceChanged { workspace } => {
                         let tbl = plugin.lua.create_table().ok();
                         if let Some(tbl) = &tbl {
                             let _ = tbl.set("workspace", *workspace);
                         }
-                        tbl.map(LuaValue::Table)
-                            .unwrap_or(LuaValue::Nil)
+                        tbl.map(LuaValue::Table).unwrap_or(LuaValue::Nil)
                     }
                     PluginEvent::WindowMovedWorkspace { id, workspace } => {
                         let tbl = plugin.lua.create_table().ok();
@@ -424,8 +488,7 @@ impl PluginRuntime for LuaRuntime {
                             let _ = tbl.set("id", *id);
                             let _ = tbl.set("workspace", *workspace);
                         }
-                        tbl.map(LuaValue::Table)
-                            .unwrap_or(LuaValue::Nil)
+                        tbl.map(LuaValue::Table).unwrap_or(LuaValue::Nil)
                     }
                 };
 
@@ -671,10 +734,42 @@ end)
         let placements = layout.arrange(&windows, area);
 
         assert_eq!(placements.len(), 4);
-        assert_eq!(placements[0].rect, Rect { x: 0, y: 0, width: 500, height: 500 });
-        assert_eq!(placements[1].rect, Rect { x: 500, y: 0, width: 500, height: 500 });
-        assert_eq!(placements[2].rect, Rect { x: 0, y: 500, width: 500, height: 500 });
-        assert_eq!(placements[3].rect, Rect { x: 500, y: 500, width: 500, height: 500 });
+        assert_eq!(
+            placements[0].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 500,
+                height: 500
+            }
+        );
+        assert_eq!(
+            placements[1].rect,
+            Rect {
+                x: 500,
+                y: 0,
+                width: 500,
+                height: 500
+            }
+        );
+        assert_eq!(
+            placements[2].rect,
+            Rect {
+                x: 0,
+                y: 500,
+                width: 500,
+                height: 500
+            }
+        );
+        assert_eq!(
+            placements[3].rect,
+            Rect {
+                x: 500,
+                y: 500,
+                width: 500,
+                height: 500
+            }
+        );
     }
 
     #[test]
@@ -740,7 +835,12 @@ end)
         runtime.load_plugin_source("test", source).unwrap();
         let layout = runtime.create_layout("grid").unwrap();
 
-        let area = Rect { x: 0, y: 0, width: 1920, height: 1080 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
         let placements = layout.arrange(&[WindowId(1)], area);
 
         assert_eq!(placements.len(), 1);

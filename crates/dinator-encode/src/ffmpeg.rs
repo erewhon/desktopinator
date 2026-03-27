@@ -1,4 +1,4 @@
-use anyhow::{Context, bail};
+use anyhow::{bail, Context};
 use tracing::info;
 
 use crate::EncodedFrame;
@@ -51,7 +51,10 @@ impl FfmpegEncoder {
         for name in &encoder_names {
             match try_create_encoder(name, width, height, bitrate_bps) {
                 Ok((encoder, converter)) => {
-                    info!(encoder = name, width, height, bitrate_bps, "FFmpeg encoder created");
+                    info!(
+                        encoder = name,
+                        width, height, bitrate_bps, "FFmpeg encoder created"
+                    );
                     return Ok(Self {
                         encoder,
                         converter,
@@ -125,8 +128,8 @@ fn try_create_encoder(
             // This prevents large frames from overwhelming the RDP DVC channel.
             opts.set("crf", "20");
             encoder_ctx.set_max_bit_rate(5_000_000); // 5Mbps max burst
-            // Set VBV buffer size (rc_buffer_size) — controls max single-frame burst.
-            // 600Kbits = 75KB max frame, well within DVC tolerance.
+                                                     // Set VBV buffer size (rc_buffer_size) — controls max single-frame burst.
+                                                     // 600Kbits = 75KB max frame, well within DVC tolerance.
             unsafe {
                 (*encoder_ctx.as_mut_ptr()).rc_buffer_size = 600_000;
             }

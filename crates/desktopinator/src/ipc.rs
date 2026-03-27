@@ -122,11 +122,9 @@ fn handle_client(
         }
 
         // Wait for the compositor to process the command
-        let response = resp_rx
-            .recv()
-            .unwrap_or(IpcResponse::Error {
-                message: "compositor did not respond".to_string(),
-            });
+        let response = resp_rx.recv().unwrap_or(IpcResponse::Error {
+            message: "compositor did not respond".to_string(),
+        });
 
         let mut msg = serde_json::to_string(&response)?;
         msg.push('\n');

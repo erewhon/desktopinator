@@ -3,7 +3,7 @@ use openh264::encoder::{Encoder as H264Encoder, EncoderConfig};
 use openh264::formats::YUVSlices;
 use tracing::info;
 
-use crate::{EncodedFrame, bgra_to_i420};
+use crate::{bgra_to_i420, EncodedFrame};
 
 pub struct OpenH264Encoder {
     encoder: H264Encoder,
@@ -16,8 +16,7 @@ pub struct OpenH264Encoder {
 
 impl OpenH264Encoder {
     pub fn new(width: u32, height: u32, bitrate_bps: u32) -> anyhow::Result<Self> {
-        let config = EncoderConfig::new()
-            .set_bitrate_bps(bitrate_bps);
+        let config = EncoderConfig::new().set_bitrate_bps(bitrate_bps);
         // openh264 0.6: encoder auto-initializes on first encode with dimensions from YUVSource
         let encoder = H264Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
             .context("failed to create openh264 encoder")?;
@@ -37,7 +36,12 @@ impl OpenH264Encoder {
 }
 
 impl crate::Encoder for OpenH264Encoder {
-    fn encode(&mut self, bgra: &[u8], width: u32, height: u32) -> anyhow::Result<Option<EncodedFrame>> {
+    fn encode(
+        &mut self,
+        bgra: &[u8],
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Option<EncodedFrame>> {
         if width != self.width || height != self.height {
             self.resize(width, height)?;
         }
@@ -64,7 +68,9 @@ impl crate::Encoder for OpenH264Encoder {
             self.encoder.force_intra_frame();
         }
 
-        let bitstream = self.encoder.encode(&yuv)
+        let bitstream = self
+            .encoder
+            .encode(&yuv)
             .context("openh264 encode failed")?;
 
         let mut data = Vec::new();
@@ -86,8 +92,7 @@ impl crate::Encoder for OpenH264Encoder {
         info!(width, height, "openh264 encoder resize");
         // openh264 auto-reinitializes when dimensions change, but we recreate
         // to ensure clean state
-        let config = EncoderConfig::new()
-            .set_bitrate_bps(self.bitrate_bps);
+        let config = EncoderConfig::new().set_bitrate_bps(self.bitrate_bps);
         self.encoder = H264Encoder::with_api_config(openh264::OpenH264API::from_source(), config)
             .context("failed to recreate openh264 encoder")?;
         self.width = width;

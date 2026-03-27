@@ -11,20 +11,20 @@ use smithay::reexports::wayland_server::backend::ClientData;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::wayland::compositor::CompositorState;
-use smithay::wayland::selection::data_device::DataDeviceState;
-use smithay::wayland::shell::xdg::XdgShellState;
-use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::content_type::ContentTypeState;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
 use smithay::wayland::fractional_scale::FractionalScaleManagerState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::xdg::XdgShellState;
+use smithay::wayland::shm::ShmState;
 use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::wayland::xdg_foreign::XdgForeignState;
-use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
-use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
-use smithay::wayland::shm::ShmState;
 use smithay::wayland::xwayland_shell::XWaylandShellState;
 use smithay::xwayland::{X11Surface, X11Wm};
 
@@ -34,7 +34,10 @@ use dinator_ipc::IpcEvent;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 
 use dinator_plugin_api::{PluginAction, PluginEvent, PluginRuntime, WindowRule};
-use dinator_tiling::{CenteredMasterLayout, ColumnLayout, DwindleLayout, Layout, MonocleLayout, StackedLayout, Rect, WindowId};
+use dinator_tiling::{
+    CenteredMasterLayout, ColumnLayout, DwindleLayout, Layout, MonocleLayout, Rect, StackedLayout,
+    WindowId,
+};
 
 /// Thread-safe broadcaster for IPC events.
 /// IPC client threads register their sender here; the compositor emits events.
@@ -92,7 +95,10 @@ fn parse_color(s: &str) -> Option<[f32; 4]> {
     }
     let parts: Vec<&str> = s.split(',').collect();
     if parts.len() == 3 {
-        let vals: Vec<f32> = parts.iter().filter_map(|p| p.trim().parse::<f32>().ok()).collect();
+        let vals: Vec<f32> = parts
+            .iter()
+            .filter_map(|p| p.trim().parse::<f32>().ok())
+            .collect();
         if vals.len() == 3 {
             if vals.iter().all(|v| *v <= 1.0) {
                 return Some([vals[0], vals[1], vals[2], 1.0]);
@@ -407,9 +413,15 @@ impl DinatorState {
     /// Move the focused window to a different output.
     /// The window is moved to that output's active workspace.
     pub fn move_window_to_output(&mut self, target_output_name: &str) -> bool {
-        let Some(keyboard) = self.seat.get_keyboard() else { return false };
-        let Some(surface) = keyboard.current_focus() else { return false };
-        let Some(&id) = self.surface_to_id.get(&surface) else { return false };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let Some(surface) = keyboard.current_focus() else {
+            return false;
+        };
+        let Some(&id) = self.surface_to_id.get(&surface) else {
+            return false;
+        };
 
         let target_ws = match self.output_states.get(target_output_name) {
             Some(os) => os.active_workspace,
@@ -419,7 +431,9 @@ impl DinatorState {
         let current_ws = self.window_workspace.get(&id).copied().unwrap_or(1);
 
         // Find which output currently owns this window's workspace
-        let current_output_name = self.output_states.iter()
+        let current_output_name = self
+            .output_states
+            .iter()
             .find(|(_, os)| os.active_workspace == current_ws)
             .map(|(n, _)| n.clone());
 
@@ -428,7 +442,13 @@ impl DinatorState {
             return false;
         }
 
-        info!(window = id.0, from_ws = current_ws, to_ws = target_ws, target = target_output_name, "moving window to output");
+        info!(
+            window = id.0,
+            from_ws = current_ws,
+            to_ws = target_ws,
+            target = target_output_name,
+            "moving window to output"
+        );
 
         // Update workspace assignment
         self.window_workspace.insert(id, target_ws);
@@ -463,13 +483,15 @@ impl DinatorState {
 
     /// Get the Smithay Output object for the focused output.
     pub fn get_focused_output(&self) -> Option<Output> {
-        self.focused_output.as_ref()
+        self.focused_output
+            .as_ref()
             .and_then(|name| self.space.outputs().find(|o| o.name() == *name).cloned())
     }
 
     /// Get the focused output's active workspace number.
     pub fn focused_workspace(&self) -> usize {
-        self.focused_output.as_ref()
+        self.focused_output
+            .as_ref()
             .and_then(|name| self.output_states.get(name))
             .map(|s| s.active_workspace)
             .unwrap_or(1)
@@ -487,7 +509,10 @@ impl DinatorState {
 
     /// Get the window list for a workspace (immutable).
     pub fn ws_window_list(&self, ws: usize) -> &[WindowId] {
-        self.workspace_order.get(&ws).map(|v| v.as_slice()).unwrap_or(&[])
+        self.workspace_order
+            .get(&ws)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get or create the window list for a workspace (mutable).
@@ -506,34 +531,39 @@ impl DinatorState {
     // ---- Layout helpers (operate on focused output) ----
 
     pub fn layout_name(&self) -> &str {
-        self.focused_output.as_ref()
+        self.focused_output
+            .as_ref()
             .and_then(|name| self.output_states.get(name))
             .map(|s| s.layout.name())
             .unwrap_or("column")
     }
 
     pub fn grow_master(&mut self) -> bool {
-        self.focused_output.clone()
+        self.focused_output
+            .clone()
             .and_then(|name| self.output_states.get_mut(&name))
             .map(|s| s.layout.grow_master())
             .unwrap_or(false)
     }
 
     pub fn shrink_master(&mut self) -> bool {
-        self.focused_output.clone()
+        self.focused_output
+            .clone()
             .and_then(|name| self.output_states.get_mut(&name))
             .map(|s| s.layout.shrink_master())
             .unwrap_or(false)
     }
 
     pub fn master_ratio(&self) -> Option<f64> {
-        self.focused_output.as_ref()
+        self.focused_output
+            .as_ref()
             .and_then(|name| self.output_states.get(name))
             .and_then(|s| s.layout.master_ratio())
     }
 
     pub fn set_layout_gap(&mut self, gap: i32) -> bool {
-        self.focused_output.clone()
+        self.focused_output
+            .clone()
             .and_then(|name| self.output_states.get_mut(&name))
             .map(|s| s.layout.set_gap(gap))
             .unwrap_or(false)
@@ -551,7 +581,8 @@ impl DinatorState {
 
     pub fn background_for_output(&self, output: &Output) -> &Background {
         static DEFAULT: Background = Background::Solid([0.1, 0.1, 0.1, 1.0]);
-        self.output_states.get(&output.name())
+        self.output_states
+            .get(&output.name())
             .map(|s| &s.background)
             .unwrap_or(&DEFAULT)
     }
@@ -585,12 +616,12 @@ impl DinatorState {
                 }),
                 IpcEvent::WindowClosed { id } => Some(PluginEvent::WindowClosed { id: *id }),
                 IpcEvent::WindowFocused { id } => Some(PluginEvent::WindowFocused { id: *id }),
-                IpcEvent::LayoutChanged { name } => Some(PluginEvent::LayoutChanged {
-                    name: name.clone(),
-                }),
-                IpcEvent::WorkspaceChanged { workspace } => {
-                    Some(PluginEvent::WorkspaceChanged { workspace: *workspace })
+                IpcEvent::LayoutChanged { name } => {
+                    Some(PluginEvent::LayoutChanged { name: name.clone() })
                 }
+                IpcEvent::WorkspaceChanged { workspace } => Some(PluginEvent::WorkspaceChanged {
+                    workspace: *workspace,
+                }),
                 IpcEvent::WindowMovedWorkspace { id, workspace } => {
                     Some(PluginEvent::WindowMovedWorkspace {
                         id: *id,
@@ -636,8 +667,12 @@ impl DinatorState {
                 PluginAction::FocusPrev => self.focus_prev(),
                 PluginAction::CloseWindow => self.close_focused_window(),
                 PluginAction::SwapMaster => self.swap_master(),
-                PluginAction::ToggleFloat => { self.toggle_float(); }
-                PluginAction::ToggleFullscreen => { self.toggle_fullscreen(); }
+                PluginAction::ToggleFloat => {
+                    self.toggle_float();
+                }
+                PluginAction::ToggleFullscreen => {
+                    self.toggle_fullscreen();
+                }
                 PluginAction::Log { message } => {
                     info!(plugin_log = %message);
                 }
@@ -652,7 +687,11 @@ impl DinatorState {
     }
 
     /// Check if a window matches any window rule and return the first match.
-    pub fn match_window_rule(&self, app_id: Option<&str>, title: Option<&str>) -> Option<&WindowRule> {
+    pub fn match_window_rule(
+        &self,
+        app_id: Option<&str>,
+        title: Option<&str>,
+    ) -> Option<&WindowRule> {
         self.window_rules.iter().find(|rule| {
             let app_match = match (&rule.app_id, app_id) {
                 (Some(pattern), Some(id)) => id == pattern,
@@ -672,9 +711,13 @@ impl DinatorState {
 
     /// Switch to a workspace (1-9) on the focused output.
     pub fn switch_workspace(&mut self, workspace: usize) {
-        let Some(output) = self.get_focused_output() else { return };
+        let Some(output) = self.get_focused_output() else {
+            return;
+        };
         let output_name = output.name();
-        let current_ws = self.output_states.get(&output_name)
+        let current_ws = self
+            .output_states
+            .get(&output_name)
             .map(|s| s.active_workspace)
             .unwrap_or(1);
 
@@ -693,7 +736,11 @@ impl DinatorState {
         self.workspace_focus.insert(current_ws, current_focus);
 
         // Unmap old workspace windows from Space
-        let old_windows = self.workspace_order.get(&current_ws).cloned().unwrap_or_default();
+        let old_windows = self
+            .workspace_order
+            .get(&current_ws)
+            .cloned()
+            .unwrap_or_default();
         for &id in &old_windows {
             if let Some(window) = self.window_map.get(&id) {
                 self.space.unmap_elem(window);
@@ -715,12 +762,12 @@ impl DinatorState {
         self.retile(&output);
 
         // Restore focus
-        let saved_focus = self
-            .workspace_focus
+        let saved_focus = self.workspace_focus.get(&workspace).copied().flatten();
+        let new_windows = self
+            .workspace_order
             .get(&workspace)
-            .copied()
-            .flatten();
-        let new_windows = self.workspace_order.get(&workspace).cloned().unwrap_or_default();
+            .cloned()
+            .unwrap_or_default();
         let focus_id = saved_focus.or_else(|| new_windows.last().copied());
         if let Some(id) = focus_id {
             if let Some(window) = self.window_map.get(&id) {
@@ -745,9 +792,15 @@ impl DinatorState {
             return;
         }
 
-        let Some(keyboard) = self.seat.get_keyboard() else { return };
-        let Some(surface) = keyboard.current_focus() else { return };
-        let Some(&id) = self.surface_to_id.get(&surface) else { return };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let Some(surface) = keyboard.current_focus() else {
+            return;
+        };
+        let Some(&id) = self.surface_to_id.get(&surface) else {
+            return;
+        };
 
         info!(window = id.0, to = workspace, "moving window to workspace");
 
@@ -801,8 +854,12 @@ impl DinatorState {
         let output_name = output.name();
 
         let (ws, geo) = {
-            let Some(output_state) = self.output_states.get(&output_name) else { return };
-            let Some(geo) = self.space.output_geometry(output) else { return };
+            let Some(output_state) = self.output_states.get(&output_name) else {
+                return;
+            };
+            let Some(geo) = self.space.output_geometry(output) else {
+                return;
+            };
             (output_state.active_workspace, geo)
         };
 
@@ -822,7 +879,9 @@ impl DinatorState {
             .filter(|id| !self.floating.contains(id) && !self.fullscreen.contains(id))
             .collect();
 
-        let placements = self.output_states.get(&output_name)
+        let placements = self
+            .output_states
+            .get(&output_name)
             .map(|s| s.layout.arrange(&tiled_windows, area))
             .unwrap_or_default();
 
@@ -834,8 +893,7 @@ impl DinatorState {
 
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.with_pending_state(|state| {
-                        state.size =
-                            Some((placement.rect.width, placement.rect.height).into());
+                        state.size = Some((placement.rect.width, placement.rect.height).into());
                         state.states.unset(xdg_toplevel::State::Fullscreen);
                     });
                     toplevel.send_pending_configure();
@@ -850,13 +908,16 @@ impl DinatorState {
         }
 
         // Fullscreen windows fill the entire output (only for this workspace)
-        let fullscreen_on_ws: Vec<WindowId> = self.fullscreen.iter()
+        let fullscreen_on_ws: Vec<WindowId> = self
+            .fullscreen
+            .iter()
             .filter(|id| ws_windows.contains(id))
             .copied()
             .collect();
         for id in fullscreen_on_ws {
             if let Some(window) = self.window_map.get(&id) {
-                self.space.map_element(window.clone(), (geo.loc.x, geo.loc.y), false);
+                self.space
+                    .map_element(window.clone(), (geo.loc.x, geo.loc.y), false);
                 if let Some(toplevel) = window.toplevel() {
                     toplevel.with_pending_state(|state| {
                         state.size = Some((geo.size.w, geo.size.h).into());
@@ -976,10 +1037,7 @@ impl DinatorState {
                         });
                         toplevel.send_pending_configure();
                     } else if let Some(x11) = window.x11_surface() {
-                        let rect = smithay::utils::Rectangle::new(
-                            (x, y).into(),
-                            (w, h).into(),
-                        );
+                        let rect = smithay::utils::Rectangle::new((x, y).into(), (w, h).into());
                         let _ = x11.configure(Some(rect));
                     }
                 }
@@ -1024,7 +1082,9 @@ impl DinatorState {
 
     /// Close the currently focused window.
     pub fn close_focused_window(&mut self) {
-        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
         let focus = keyboard.current_focus();
         if let Some(surface) = focus {
             if let Some(id) = self.surface_to_id.get(&surface) {
@@ -1057,7 +1117,9 @@ impl DinatorState {
             return;
         }
 
-        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
         let current_focus = keyboard.current_focus();
 
         let focused_idx = current_focus
@@ -1082,7 +1144,9 @@ impl DinatorState {
             return;
         }
 
-        let Some(keyboard) = self.seat.get_keyboard() else { return };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
         let current_focus = keyboard.current_focus();
 
         let current_idx = current_focus

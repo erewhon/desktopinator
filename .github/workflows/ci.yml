@@ -41,7 +41,14 @@ jobs:
             libxcb-render0-dev \
             libxcb-shm0-dev \
             libx11-xcb-dev \
-            libx11-dev
+            libx11-dev \
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswscale-dev \
+            libavdevice-dev \
+            libavfilter-dev \
+            libswresample-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable

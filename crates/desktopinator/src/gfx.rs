@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{encode_vec, impl_as_any};
 use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
-use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::rdp::vc::dvc::gfx::{
-    self, Avc420BitmapStream, CapabilitySet, Codec1Type,
-    CreateSurfacePdu, EndFramePdu, MapSurfaceToOutputPdu, PixelFormat, QuantQuality,
-    ResetGraphicsPdu, StartFramePdu, Timestamp, WireToSurface1Pdu,
+    self, Avc420BitmapStream, CapabilitySet, Codec1Type, CreateSurfacePdu, EndFramePdu,
+    MapSurfaceToOutputPdu, PixelFormat, QuantQuality, ResetGraphicsPdu, StartFramePdu, Timestamp,
+    WireToSurface1Pdu,
 };
 use ironrdp_pdu::PduResult;
 use tracing::{debug, info, warn};
@@ -105,7 +105,10 @@ impl GfxSharedState {
 
     /// Look up surface_id for an output by name.
     pub fn surface_id_for_output(&self, name: &str) -> Option<u16> {
-        self.outputs.iter().find(|o| o.name == name).map(|o| o.surface_id)
+        self.outputs
+            .iter()
+            .find(|o| o.name == name)
+            .map(|o| o.surface_id)
     }
 }
 
@@ -181,9 +184,14 @@ impl DvcProcessor for GfxHandler {
             // CYCLEALL_FRAME_ACKNOWLEDGE = 0x000D
             0x000D => {
                 if gfx_data.len() >= 16 {
-                    let frame_id = u32::from_le_bytes([gfx_data[8], gfx_data[9], gfx_data[10], gfx_data[11]]);
-                    let total_decoded =
-                        u32::from_le_bytes([gfx_data[12], gfx_data[13], gfx_data[14], gfx_data[15]]);
+                    let frame_id =
+                        u32::from_le_bytes([gfx_data[8], gfx_data[9], gfx_data[10], gfx_data[11]]);
+                    let total_decoded = u32::from_le_bytes([
+                        gfx_data[12],
+                        gfx_data[13],
+                        gfx_data[14],
+                        gfx_data[15],
+                    ]);
                     debug!(frame_id, total_decoded, "GFX: frame acknowledged");
                     let mut state = self.state.lock().unwrap();
                     state.last_acked_frame_id = Some(frame_id);
@@ -199,10 +207,7 @@ impl DvcProcessor for GfxHandler {
 }
 
 impl GfxHandler {
-    fn handle_capabilities_advertise(
-        &mut self,
-        payload: &[u8],
-    ) -> PduResult<Vec<DvcMessage>> {
+    fn handle_capabilities_advertise(&mut self, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         // Parse capabilities manually to handle unknown versions gracefully.
         // ironrdp-pdu's CapabilitiesAdvertisePdu::decode() hard-fails on unknown
         // capability versions, but RDP clients (e.g. Windows App on Mac) often
@@ -226,13 +231,16 @@ impl GfxHandler {
         //                     via ServerEvent::Dvc on the next render tick
 
         // Phase 1: CapabilitiesConfirm (ZGFX-wrapped per MS-RDPEGFX 2.2.2)
-        let caps_confirm = gfx::ServerPdu::CapabilitiesConfirm(gfx::CapabilitiesConfirmPdu(
-            selected_cap.clone(),
-        ));
+        let caps_confirm =
+            gfx::ServerPdu::CapabilitiesConfirm(gfx::CapabilitiesConfirmPdu(selected_cap.clone()));
         let caps_raw = encode_vec(&caps_confirm)
             .map_err(|e| ironrdp_pdu::pdu_other_err!("failed to encode GFX PDU", source: e))?;
         let caps_encoded = wrap_zgfx_uncompressed(&caps_raw);
-        debug!(raw_len = caps_raw.len(), zgfx_len = caps_encoded.len(), "GFX: encoded CapabilitiesConfirm");
+        debug!(
+            raw_len = caps_raw.len(),
+            zgfx_len = caps_encoded.len(),
+            "GFX: encoded CapabilitiesConfirm"
+        );
 
         // Phase 2: Build per-output monitor list and surfaces
         let monitors: Vec<Monitor> = outputs
@@ -243,7 +251,11 @@ impl GfxHandler {
                 top: o.y as i32,
                 right: (o.x as i32) + (o.width as i32) - 1,
                 bottom: (o.y as i32) + (o.height as i32) - 1,
-                flags: if i == 0 { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+                flags: if i == 0 {
+                    MonitorFlags::PRIMARY
+                } else {
+                    MonitorFlags::empty()
+                },
             })
             .collect();
 
@@ -272,16 +284,20 @@ impl GfxHandler {
                 output_origin_y: o.y,
             });
             for pdu in [create, map] {
-                let encoded = encode_vec(&pdu)
-                    .map_err(|e| ironrdp_pdu::pdu_other_err!("failed to encode GFX PDU", source: e))?;
+                let encoded = encode_vec(&pdu).map_err(
+                    |e| ironrdp_pdu::pdu_other_err!("failed to encode GFX PDU", source: e),
+                )?;
                 deferred_raw.extend_from_slice(&encoded);
             }
         }
 
         let deferred = wrap_zgfx_uncompressed(&deferred_raw);
         debug!(
-            raw_len = deferred_raw.len(), zgfx_len = deferred.len(),
-            outputs = outputs.len(), "GFX: queued deferred PDUs (ResetGraphics + {} surfaces)", outputs.len()
+            raw_len = deferred_raw.len(),
+            zgfx_len = deferred.len(),
+            outputs = outputs.len(),
+            "GFX: queued deferred PDUs (ResetGraphics + {} surfaces)",
+            outputs.len()
         );
 
         let mut state = self.state.lock().unwrap();
@@ -291,8 +307,10 @@ impl GfxHandler {
         });
         state.avc_supported = avc_supported;
         info!(
-            composite_w = composite_width, composite_h = composite_height,
-            outputs = outputs.len(), avc_supported,
+            composite_w = composite_width,
+            composite_h = composite_height,
+            outputs = outputs.len(),
+            avc_supported,
             "GFX: caps confirmed, multi-surface setup deferred"
         );
 
@@ -334,12 +352,27 @@ fn parse_capabilities_advertise(data: &[u8]) -> Vec<CapabilitySet> {
             warn!(cap_index = i, "GFX: CapabilitiesAdvertise truncated");
             break;
         }
-        let version = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
-        let data_length = u32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]) as usize;
+        let version = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+        let data_length = u32::from_le_bytes([
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]) as usize;
         offset += 8;
 
         if offset + data_length > data.len() {
-            warn!(cap_index = i, version = format!("0x{version:08x}"), data_length, "GFX: capability data truncated");
+            warn!(
+                cap_index = i,
+                version = format!("0x{version:08x}"),
+                data_length,
+                "GFX: capability data truncated"
+            );
             break;
         }
 
@@ -383,11 +416,17 @@ fn parse_capabilities_advertise(data: &[u8]) -> Vec<CapabilitySet> {
             },
             V10_1 => {
                 // V10_1 has 16 bytes of data but no flags we use
-                debug!(version = format!("0x{version:08x}"), "GFX: parsed V10_1 capability");
+                debug!(
+                    version = format!("0x{version:08x}"),
+                    "GFX: parsed V10_1 capability"
+                );
                 CapabilitySet::V10_1
             }
             _ => {
-                info!(version = format!("0x{version:08x}"), data_length, "GFX: skipping unknown capability version");
+                info!(
+                    version = format!("0x{version:08x}"),
+                    data_length, "GFX: skipping unknown capability version"
+                );
                 continue;
             }
         };
@@ -396,7 +435,11 @@ fn parse_capabilities_advertise(data: &[u8]) -> Vec<CapabilitySet> {
         caps.push(cap);
     }
 
-    info!(total = count, parsed = caps.len(), "GFX: parsed client capabilities");
+    info!(
+        total = count,
+        parsed = caps.len(),
+        "GFX: parsed client capabilities"
+    );
     caps
 }
 
@@ -425,16 +468,24 @@ fn select_capability(advertised: &[CapabilitySet]) -> (CapabilitySet, bool) {
 
     fn is_avc_supported(cap: &CapabilitySet) -> bool {
         match cap {
-            CapabilitySet::V8_1 { flags } => flags.contains(gfx::CapabilitiesV81Flags::AVC420_ENABLED),
+            CapabilitySet::V8_1 { flags } => {
+                flags.contains(gfx::CapabilitiesV81Flags::AVC420_ENABLED)
+            }
             // V10.4+ support AVC unless AVC_DISABLED flag is set
-            CapabilitySet::V10_4 { flags } | CapabilitySet::V10_5 { flags } | CapabilitySet::V10_6 { flags } => {
+            CapabilitySet::V10_4 { flags }
+            | CapabilitySet::V10_5 { flags }
+            | CapabilitySet::V10_6 { flags } => {
                 !flags.contains(gfx::CapabilitiesV104Flags::AVC_DISABLED)
             }
-            CapabilitySet::V10_7 { flags } => !flags.contains(gfx::CapabilitiesV107Flags::AVC_DISABLED),
+            CapabilitySet::V10_7 { flags } => {
+                !flags.contains(gfx::CapabilitiesV107Flags::AVC_DISABLED)
+            }
             CapabilitySet::V10 { flags } | CapabilitySet::V10_2 { flags } => {
                 !flags.contains(gfx::CapabilitiesV10Flags::AVC_DISABLED)
             }
-            CapabilitySet::V10_3 { flags } => !flags.contains(gfx::CapabilitiesV103Flags::AVC_DISABLED),
+            CapabilitySet::V10_3 { flags } => {
+                !flags.contains(gfx::CapabilitiesV103Flags::AVC_DISABLED)
+            }
             _ => false,
         }
     }
@@ -489,8 +540,8 @@ pub fn build_reset_surface_pdus(
         let delete = gfx::ServerPdu::DeleteSurface(DeleteSurfacePdu {
             surface_id: o.surface_id,
         });
-        let encoded = encode_vec(&delete)
-            .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+        let encoded =
+            encode_vec(&delete).map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
         raw.extend_from_slice(&encoded);
     }
 
@@ -503,7 +554,11 @@ pub fn build_reset_surface_pdus(
             top: o.y as i32,
             right: (o.x as i32) + (o.width as i32) - 1,
             bottom: (o.y as i32) + (o.height as i32) - 1,
-            flags: if i == 0 { MonitorFlags::PRIMARY } else { MonitorFlags::empty() },
+            flags: if i == 0 {
+                MonitorFlags::PRIMARY
+            } else {
+                MonitorFlags::empty()
+            },
         })
         .collect();
 
@@ -512,8 +567,8 @@ pub fn build_reset_surface_pdus(
         height: composite_height as u32,
         monitors,
     });
-    let encoded = encode_vec(&reset)
-        .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+    let encoded =
+        encode_vec(&reset).map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
     raw.extend_from_slice(&encoded);
 
     // Create and map each new surface
@@ -530,8 +585,8 @@ pub fn build_reset_surface_pdus(
             output_origin_y: o.y,
         });
         for pdu in [create, map] {
-            let encoded = encode_vec(&pdu)
-                .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+            let encoded =
+                encode_vec(&pdu).map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
             raw.extend_from_slice(&encoded);
         }
     }
@@ -599,8 +654,8 @@ pub fn encode_gfx_avc420_frame(
     // Encode all three PDUs, concatenate, then ZGFX-wrap
     let mut raw = Vec::new();
     for pdu in [start_frame, wire_to_surface, end_frame] {
-        let encoded = encode_vec(&pdu)
-            .map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+        let encoded =
+            encode_vec(&pdu).map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
         raw.extend_from_slice(&encoded);
     }
 

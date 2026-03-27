@@ -239,49 +239,52 @@ fn run_pipewire_capture(
 
     let start_time = std::time::Instant::now();
     let frame_size = channels as u32 * 2; // S16LE = 2 bytes per sample per channel
-    // Send ~20ms chunks
+                                          // Send ~20ms chunks
     let chunk_bytes = (sample_rate / 50) * frame_size;
 
     let _listener = stream
         .add_local_listener_with_user_data(Vec::<u8>::new())
-        .process(move |stream: &pipewire::stream::Stream, accumulator: &mut Vec<u8>| {
-            match stream.dequeue_buffer() {
-                Some(mut buffer) => {
-                    let datas = buffer.datas_mut();
-                    if let Some(data) = datas.first_mut() {
-                        let chunk_offset = data.chunk().offset() as usize;
-                        let chunk_size = data.chunk().size() as usize;
+        .process(
+            move |stream: &pipewire::stream::Stream, accumulator: &mut Vec<u8>| {
+                match stream.dequeue_buffer() {
+                    Some(mut buffer) => {
+                        let datas = buffer.datas_mut();
+                        if let Some(data) = datas.first_mut() {
+                            let chunk_offset = data.chunk().offset() as usize;
+                            let chunk_size = data.chunk().size() as usize;
 
-                        if chunk_size > 0 {
-                            if let Some(raw) = data.data() {
-                                let end = (chunk_offset + chunk_size).min(raw.len());
-                                if chunk_offset < end {
-                                    accumulator.extend_from_slice(&raw[chunk_offset..end]);
+                            if chunk_size > 0 {
+                                if let Some(raw) = data.data() {
+                                    let end = (chunk_offset + chunk_size).min(raw.len());
+                                    if chunk_offset < end {
+                                        accumulator.extend_from_slice(&raw[chunk_offset..end]);
+                                    }
+                                }
+                            }
+
+                            // Send complete chunks
+                            while accumulator.len() >= chunk_bytes as usize {
+                                let audio_chunk: Vec<u8> =
+                                    accumulator.drain(..chunk_bytes as usize).collect();
+                                let ts = start_time.elapsed().as_millis() as u32;
+                                if event_tx
+                                    .send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(
+                                        audio_chunk,
+                                        ts,
+                                    )))
+                                    .is_err()
+                                {
+                                    return;
                                 }
                             }
                         }
-
-                        // Send complete chunks
-                        while accumulator.len() >= chunk_bytes as usize {
-                            let audio_chunk: Vec<u8> =
-                                accumulator.drain(..chunk_bytes as usize).collect();
-                            let ts = start_time.elapsed().as_millis() as u32;
-                            if event_tx
-                                .send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(
-                                    audio_chunk, ts,
-                                )))
-                                .is_err()
-                            {
-                                return;
-                            }
-                        }
+                    }
+                    None => {
+                        debug!("RDPSND: no buffer available from PipeWire");
                     }
                 }
-                None => {
-                    debug!("RDPSND: no buffer available from PipeWire");
-                }
-            }
-        })
+            },
+        )
         .register()
         .expect("register PipeWire stream listener");
 
@@ -305,8 +308,7 @@ fn run_pipewire_capture(
 
     info!(
         sample_rate,
-        channels,
-        "RDPSND: PipeWire audio capture started"
+        channels, "RDPSND: PipeWire audio capture started"
     );
 
     mainloop.run();

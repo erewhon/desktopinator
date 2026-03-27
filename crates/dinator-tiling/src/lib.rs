@@ -28,19 +28,29 @@ pub trait Layout {
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement>;
 
     /// Increase the master area ratio by a step. Returns true if changed.
-    fn grow_master(&mut self) -> bool { false }
+    fn grow_master(&mut self) -> bool {
+        false
+    }
 
     /// Decrease the master area ratio by a step. Returns true if changed.
-    fn shrink_master(&mut self) -> bool { false }
+    fn shrink_master(&mut self) -> bool {
+        false
+    }
 
     /// Current master ratio, if applicable.
-    fn master_ratio(&self) -> Option<f64> { None }
+    fn master_ratio(&self) -> Option<f64> {
+        None
+    }
 
     /// Set the gap between windows. Returns true if changed.
-    fn set_gap(&mut self, _gap: i32) -> bool { false }
+    fn set_gap(&mut self, _gap: i32) -> bool {
+        false
+    }
 
     /// Current gap in pixels.
-    fn gap(&self) -> i32 { 0 }
+    fn gap(&self) -> i32 {
+        0
+    }
 }
 
 /// Master-stack layout: first window takes the left portion,
@@ -66,7 +76,9 @@ const RATIO_MIN: f64 = 0.20;
 const RATIO_MAX: f64 = 0.80;
 
 impl Layout for ColumnLayout {
-    fn name(&self) -> &str { "column" }
+    fn name(&self) -> &str {
+        "column"
+    }
 
     fn grow_master(&mut self) -> bool {
         if self.main_ratio < RATIO_MAX {
@@ -91,10 +103,17 @@ impl Layout for ColumnLayout {
     }
 
     fn set_gap(&mut self, gap: i32) -> bool {
-        if self.gap != gap { self.gap = gap; true } else { false }
+        if self.gap != gap {
+            self.gap = gap;
+            true
+        } else {
+            false
+        }
     }
 
-    fn gap(&self) -> i32 { self.gap }
+    fn gap(&self) -> i32 {
+        self.gap
+    }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
@@ -176,13 +195,22 @@ impl Default for MonocleLayout {
 }
 
 impl Layout for MonocleLayout {
-    fn name(&self) -> &str { "monocle" }
-
-    fn set_gap(&mut self, gap: i32) -> bool {
-        if self.gap != gap { self.gap = gap; true } else { false }
+    fn name(&self) -> &str {
+        "monocle"
     }
 
-    fn gap(&self) -> i32 { self.gap }
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap {
+            self.gap = gap;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn gap(&self) -> i32 {
+        self.gap
+    }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         let g = self.gap;
@@ -220,7 +248,9 @@ impl Default for DwindleLayout {
 }
 
 impl Layout for DwindleLayout {
-    fn name(&self) -> &str { "dwindle" }
+    fn name(&self) -> &str {
+        "dwindle"
+    }
 
     fn grow_master(&mut self) -> bool {
         if self.main_ratio < RATIO_MAX {
@@ -245,10 +275,17 @@ impl Layout for DwindleLayout {
     }
 
     fn set_gap(&mut self, gap: i32) -> bool {
-        if self.gap != gap { self.gap = gap; true } else { false }
+        if self.gap != gap {
+            self.gap = gap;
+            true
+        } else {
+            false
+        }
     }
 
-    fn gap(&self) -> i32 { self.gap }
+    fn gap(&self) -> i32 {
+        self.gap
+    }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
@@ -280,7 +317,10 @@ impl Layout for DwindleLayout {
         for (i, &id) in windows.iter().enumerate() {
             if i == windows.len() - 1 {
                 // Last window gets all remaining space
-                placements.push(Placement { id, rect: remaining });
+                placements.push(Placement {
+                    id,
+                    rect: remaining,
+                });
                 break;
             }
 
@@ -337,7 +377,9 @@ impl Default for CenteredMasterLayout {
 }
 
 impl Layout for CenteredMasterLayout {
-    fn name(&self) -> &str { "centered" }
+    fn name(&self) -> &str {
+        "centered"
+    }
 
     fn grow_master(&mut self) -> bool {
         if self.main_ratio < RATIO_MAX {
@@ -362,10 +404,17 @@ impl Layout for CenteredMasterLayout {
     }
 
     fn set_gap(&mut self, gap: i32) -> bool {
-        if self.gap != gap { self.gap = gap; true } else { false }
+        if self.gap != gap {
+            self.gap = gap;
+            true
+        } else {
+            false
+        }
     }
 
-    fn gap(&self) -> i32 { self.gap }
+    fn gap(&self) -> i32 {
+        self.gap
+    }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
@@ -395,11 +444,21 @@ impl Layout for CenteredMasterLayout {
             return vec![
                 Placement {
                     id: windows[0],
-                    rect: Rect { x: area.x + g, y: area.y + g, width: main_w, height: h },
+                    rect: Rect {
+                        x: area.x + g,
+                        y: area.y + g,
+                        width: main_w,
+                        height: h,
+                    },
                 },
                 Placement {
                     id: windows[1],
-                    rect: Rect { x: area.x + g + main_w + g, y: area.y + g, width: stack_w, height: h },
+                    rect: Rect {
+                        x: area.x + g + main_w + g,
+                        y: area.y + g,
+                        width: stack_w,
+                        height: h,
+                    },
                 },
             ];
         }
@@ -450,7 +509,12 @@ impl Layout for CenteredMasterLayout {
                 };
                 placements.push(Placement {
                     id,
-                    rect: Rect { x: left_x, y, width: side_w, height: h },
+                    rect: Rect {
+                        x: left_x,
+                        y,
+                        width: side_w,
+                        height: h,
+                    },
                 });
             }
         }
@@ -469,7 +533,12 @@ impl Layout for CenteredMasterLayout {
                 };
                 placements.push(Placement {
                     id,
-                    rect: Rect { x: right_x, y, width: side_w, height: h },
+                    rect: Rect {
+                        x: right_x,
+                        y,
+                        width: side_w,
+                        height: h,
+                    },
                 });
             }
         }
@@ -498,13 +567,22 @@ impl Default for StackedLayout {
 }
 
 impl Layout for StackedLayout {
-    fn name(&self) -> &str { "stacked" }
-
-    fn set_gap(&mut self, gap: i32) -> bool {
-        if self.gap != gap { self.gap = gap; true } else { false }
+    fn name(&self) -> &str {
+        "stacked"
     }
 
-    fn gap(&self) -> i32 { self.gap }
+    fn set_gap(&mut self, gap: i32) -> bool {
+        if self.gap != gap {
+            self.gap = gap;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn gap(&self) -> i32 {
+        self.gap
+    }
 
     fn arrange(&self, windows: &[WindowId], area: Rect) -> Vec<Placement> {
         if windows.is_empty() {
@@ -574,14 +652,27 @@ mod tests {
     #[test]
     fn empty_layout() {
         let layout = no_gap_layout(0.55);
-        let result = layout.arrange(&[], Rect { x: 0, y: 0, width: 1920, height: 1080 });
+        let result = layout.arrange(
+            &[],
+            Rect {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+            },
+        );
         assert!(result.is_empty());
     }
 
     #[test]
     fn single_window_fills_area() {
         let layout = no_gap_layout(0.55);
-        let area = Rect { x: 0, y: 0, width: 1920, height: 1080 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
         let result = layout.arrange(&[WindowId(1)], area);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].rect, area);
@@ -590,48 +681,146 @@ mod tests {
     #[test]
     fn two_windows_split() {
         let layout = no_gap_layout(0.5);
-        let area = Rect { x: 0, y: 0, width: 1000, height: 500 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 500,
+        };
         let result = layout.arrange(&[WindowId(1), WindowId(2)], area);
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0].rect, Rect { x: 0, y: 0, width: 500, height: 500 });
-        assert_eq!(result[1].rect, Rect { x: 500, y: 0, width: 500, height: 500 });
+        assert_eq!(
+            result[0].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 500,
+                height: 500
+            }
+        );
+        assert_eq!(
+            result[1].rect,
+            Rect {
+                x: 500,
+                y: 0,
+                width: 500,
+                height: 500
+            }
+        );
     }
 
     #[test]
     fn three_windows_master_plus_stack() {
         let layout = no_gap_layout(0.5);
-        let area = Rect { x: 0, y: 0, width: 1000, height: 600 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 600,
+        };
         let result = layout.arrange(&[WindowId(1), WindowId(2), WindowId(3)], area);
 
         assert_eq!(result.len(), 3);
-        assert_eq!(result[0].rect, Rect { x: 0, y: 0, width: 500, height: 600 });
-        assert_eq!(result[1].rect, Rect { x: 500, y: 0, width: 500, height: 300 });
-        assert_eq!(result[2].rect, Rect { x: 500, y: 300, width: 500, height: 300 });
+        assert_eq!(
+            result[0].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 500,
+                height: 600
+            }
+        );
+        assert_eq!(
+            result[1].rect,
+            Rect {
+                x: 500,
+                y: 0,
+                width: 500,
+                height: 300
+            }
+        );
+        assert_eq!(
+            result[2].rect,
+            Rect {
+                x: 500,
+                y: 300,
+                width: 500,
+                height: 300
+            }
+        );
     }
 
     #[test]
     fn dwindle_four_windows() {
-        let layout = DwindleLayout { main_ratio: 0.5, gap: 0 };
-        let area = Rect { x: 0, y: 0, width: 1000, height: 1000 };
+        let layout = DwindleLayout {
+            main_ratio: 0.5,
+            gap: 0,
+        };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 1000,
+        };
         let windows = vec![WindowId(1), WindowId(2), WindowId(3), WindowId(4)];
         let result = layout.arrange(&windows, area);
 
         assert_eq!(result.len(), 4);
         // First: left half
-        assert_eq!(result[0].rect, Rect { x: 0, y: 0, width: 500, height: 1000 });
+        assert_eq!(
+            result[0].rect,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 500,
+                height: 1000
+            }
+        );
         // Second: top-right
-        assert_eq!(result[1].rect, Rect { x: 500, y: 0, width: 500, height: 500 });
+        assert_eq!(
+            result[1].rect,
+            Rect {
+                x: 500,
+                y: 0,
+                width: 500,
+                height: 500
+            }
+        );
         // Third: bottom-right-left
-        assert_eq!(result[2].rect, Rect { x: 500, y: 500, width: 250, height: 500 });
+        assert_eq!(
+            result[2].rect,
+            Rect {
+                x: 500,
+                y: 500,
+                width: 250,
+                height: 500
+            }
+        );
         // Fourth: bottom-right-right (remaining)
-        assert_eq!(result[3].rect, Rect { x: 750, y: 500, width: 250, height: 500 });
+        assert_eq!(
+            result[3].rect,
+            Rect {
+                x: 750,
+                y: 500,
+                width: 250,
+                height: 500
+            }
+        );
     }
 
     #[test]
     fn centered_three_windows() {
-        let layout = CenteredMasterLayout { main_ratio: 0.5, gap: 0 };
-        let area = Rect { x: 0, y: 0, width: 1000, height: 500 };
+        let layout = CenteredMasterLayout {
+            main_ratio: 0.5,
+            gap: 0,
+        };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 500,
+        };
         let windows = vec![WindowId(1), WindowId(2), WindowId(3)];
         let result = layout.arrange(&windows, area);
 
@@ -649,8 +838,16 @@ mod tests {
 
     #[test]
     fn gaps_applied() {
-        let layout = ColumnLayout { main_ratio: 0.5, gap: 10 };
-        let area = Rect { x: 0, y: 0, width: 1000, height: 500 };
+        let layout = ColumnLayout {
+            main_ratio: 0.5,
+            gap: 10,
+        };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 1000,
+            height: 500,
+        };
         let result = layout.arrange(&[WindowId(1), WindowId(2)], area);
 
         assert_eq!(result.len(), 2);
@@ -659,7 +856,7 @@ mod tests {
         assert_eq!(result[0].rect.y, 10);
         assert_eq!(result[0].rect.width, 485); // (1000 - 30) * 0.5
         assert_eq!(result[0].rect.height, 480); // 500 - 20
-        // Stack: after master + gap, 10px from right
+                                                // Stack: after master + gap, 10px from right
         assert_eq!(result[1].rect.x, 10 + 485 + 10);
         assert_eq!(result[1].rect.width, 485);
     }
