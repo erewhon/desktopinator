@@ -106,25 +106,61 @@ impl CompositorHandler for DinatorState {
         if let Some(window) = found {
             window.on_commit();
 
-            // If the window committed a buffer that doesn't match its configured
-            // tiled size, force a re-configure to constrain it back.
             if let Some(toplevel) = window.toplevel() {
-                let target = compositor::with_states(toplevel.wl_surface(), |states| {
-                    let attrs = states
+                // Check if this toplevel just got a parent set — auto-float it
+                let has_parent = compositor::with_states(toplevel.wl_surface(), |states| {
+                    states
                         .data_map
                         .get::<XdgToplevelSurfaceData>()
-                        .unwrap()
-                        .lock()
-                        .unwrap();
-                    attrs.current_server_state().size
+                        .map(|d| d.lock().unwrap().parent.is_some())
+                        .unwrap_or(false)
                 });
-                let actual = window.geometry().size;
-                if let Some(target) = target {
-                    if actual != target {
-                        toplevel.with_pending_state(|state| {
-                            state.size = Some(target);
+
+                if has_parent {
+                    if let Some(&id) = self.surface_to_id.get(surface) {
+                        if !self.floating.contains(&id) {
+                            tracing::info!(id = id.0, "auto-floating child toplevel on commit");
+                            self.floating.insert(id);
+                            // Center on output
+                            if let Some(output) = self.get_focused_output() {
+                                if let Some(out_geo) = self.space.output_geometry(&output) {
+                                    let win_geo = window.geometry();
+                                    let w = win_geo.size.w.max(200);
+                                    let h = win_geo.size.h.max(200);
+                                    let cx = out_geo.loc.x + (out_geo.size.w - w) / 2;
+                                    let cy = out_geo.loc.y + (out_geo.size.h - h) / 2;
+                                    self.space.map_element(window.clone(), (cx, cy), false);
+                                    self.space.raise_element(&window, true);
+                                }
+                                self.retile(&output);
+                            }
+                        }
+                    }
+                }
+
+                // If the window committed a buffer that doesn't match its configured
+                // tiled size, force a re-configure to constrain it back.
+                // (Skip for floating windows — they manage their own size)
+                if let Some(&id) = self.surface_to_id.get(surface) {
+                    if !self.floating.contains(&id) {
+                        let target = compositor::with_states(toplevel.wl_surface(), |states| {
+                            let attrs = states
+                                .data_map
+                                .get::<XdgToplevelSurfaceData>()
+                                .unwrap()
+                                .lock()
+                                .unwrap();
+                            attrs.current_server_state().size
                         });
-                        toplevel.send_configure();
+                        let actual = window.geometry().size;
+                        if let Some(target) = target {
+                            if actual != target {
+                                toplevel.with_pending_state(|state| {
+                                    state.size = Some(target);
+                                });
+                                toplevel.send_configure();
+                            }
+                        }
                     }
                 }
             }
@@ -146,40 +182,12 @@ impl XdgShellHandler for DinatorState {
         let id = Self::next_window_id();
         let ws = self.focused_workspace();
 
-        // Check if this toplevel has a parent (dialog, notification popup, etc.)
-        let has_parent = compositor::with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .map(|d| d.lock().unwrap().parent.is_some())
-                .unwrap_or(false)
-        });
-
-        let (app_id, title) = compositor::with_states(surface.wl_surface(), |states| {
-            let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
-            let attrs = attrs.map(|d| d.lock().unwrap());
-            (
-                attrs.as_ref().and_then(|a| a.app_id.clone()),
-                attrs.as_ref().and_then(|a| a.title.clone()),
-            )
-        });
-
-        info!(
-            ?app_id,
-            ?title,
-            has_parent,
-            "new toplevel window"
-        );
+        info!("new toplevel window");
 
         self.window_map.insert(id, window.clone());
         self.surface_to_id.insert(surface.wl_surface().clone(), id);
         self.window_workspace.insert(id, ws);
         self.ws_window_list_mut(ws).push(id);
-
-        // Auto-float child toplevels (dialogs, notification popups)
-        if has_parent {
-            self.floating.insert(id);
-        }
 
         // Mark the toplevel as activated
         surface.with_pending_state(|state| {
@@ -188,34 +196,9 @@ impl XdgShellHandler for DinatorState {
 
         // Map the window and retile
         let output = self.get_focused_output();
-        if has_parent {
-            // Float centered on the output
-            if let Some(ref out) = output {
-                if let Some(out_geo) = self.space.output_geometry(out) {
-                    let w = out_geo.size.w * 2 / 3;
-                    let h = out_geo.size.h * 2 / 3;
-                    let cx = out_geo.loc.x + (out_geo.size.w - w) / 2;
-                    let cy = out_geo.loc.y + (out_geo.size.h - h) / 2;
-                    surface.with_pending_state(|state| {
-                        state.size = Some((w, h).into());
-                    });
-                    self.space.map_element(window, (cx, cy), false);
-                } else {
-                    self.space.map_element(window, (0, 0), false);
-                }
-            } else {
-                self.space.map_element(window, (0, 0), false);
-            }
-        } else {
-            self.space.map_element(window, (0, 0), false);
-        }
+        self.space.map_element(window, (0, 0), false);
         if let Some(ref output) = output {
             output.enter(surface.wl_surface());
-            info!(
-                windows = self.ws_window_list(ws).len(),
-                output = %output.name(),
-                "retiling after new window"
-            );
             self.retile(output);
         }
 
@@ -224,6 +207,16 @@ impl XdgShellHandler for DinatorState {
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
         }
+
+        // Emit IPC event
+        let (app_id, title) = compositor::with_states(surface.wl_surface(), |states| {
+            let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+            let attrs = attrs.map(|d| d.lock().unwrap());
+            (
+                attrs.as_ref().and_then(|a| a.app_id.clone()),
+                attrs.as_ref().and_then(|a| a.title.clone()),
+            )
+        });
 
         // Apply window rules
         let rule = self

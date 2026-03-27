@@ -150,29 +150,35 @@ fn build_render_elements(
         }
     }
 
-    // Draw borders around floating windows so they stand out from tiled windows
-    for &id in &state.floating {
-        if let Some(window) = state.window_map.get(&id) {
-            if let Some(geo) = state.space.element_geometry(window) {
-                if output_geo.overlaps(geo) {
-                    let bw = 2;
-                    // Dark border with slight blue tint
-                    let float_border_color = [0.3f32, 0.35, 0.5, 0.9];
-                    let buf = SolidColorBuffer::new(
-                        (geo.size.w + 2 * bw, geo.size.h + 2 * bw),
-                        float_border_color,
-                    );
-                    let loc: Point<i32, Physical> = (
-                        geo.loc.x - bw - output_geo.loc.x,
-                        geo.loc.y - bw - output_geo.loc.y,
-                    )
-                        .into();
-                    // Push behind window content (after space elements)
-                    elements.push(OutputRenderElements::Border(
-                        SolidColorRenderElement::from_buffer(
-                            &buf, loc, 1.0, 1.0, Kind::Unspecified,
-                        ),
-                    ));
+    // Draw borders around floating windows so they stand out from tiled content.
+    // These go BEHIND space elements (which include the window surfaces) so the
+    // border peeks out around the edges of the floating window.
+    {
+        let num_space = elements.len(); // insert after space elements
+        for &id in &state.floating {
+            if let Some(window) = state.window_map.get(&id) {
+                if let Some(geo) = state.space.element_geometry(window) {
+                    if output_geo.overlaps(geo) && geo.size.w > 10 && geo.size.h > 10 {
+                        let bw = 3;
+                        let float_border_color = [0.35f32, 0.4, 0.6, 1.0];
+                        let buf = SolidColorBuffer::new(
+                            (geo.size.w + 2 * bw, geo.size.h + 2 * bw),
+                            float_border_color,
+                        );
+                        let loc: Point<i32, Physical> = (
+                            geo.loc.x - bw - output_geo.loc.x,
+                            geo.loc.y - bw - output_geo.loc.y,
+                        )
+                            .into();
+                        elements.insert(
+                            num_space,
+                            OutputRenderElements::Border(
+                                SolidColorRenderElement::from_buffer(
+                                    &buf, loc, 1.0, 1.0, Kind::Unspecified,
+                                ),
+                            ),
+                        );
+                    }
                 }
             }
         }
