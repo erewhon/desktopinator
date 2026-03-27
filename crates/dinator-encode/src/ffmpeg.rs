@@ -123,15 +123,16 @@ fn try_create_encoder(
     let mut opts = ffmpeg_next::Dictionary::new();
     match name {
         "libx264" => {
-            // "Capped CRF" mode: CRF 20 quality for static content (sharp text),
-            // but VBV rate control caps frame sizes during complex scenes (animations).
-            // This prevents large frames from overwhelming the RDP DVC channel.
-            opts.set("crf", "20");
-            encoder_ctx.set_max_bit_rate(5_000_000); // 5Mbps max burst
-                                                     // Set VBV buffer size (rc_buffer_size) — controls max single-frame burst.
-                                                     // 600Kbits = 75KB max frame, well within DVC tolerance.
+            // "Capped CRF" mode: CRF 23 for good quality with smaller frames,
+            // VBV rate control caps frame sizes during complex scenes (animations).
+            // Higher CRF (23 vs 20) produces noticeably smaller P-frames during
+            // motion, reducing dropped frames and pixelation.
+            opts.set("crf", "23");
+            encoder_ctx.set_max_bit_rate(10_000_000); // 10Mbps max burst
+            // VBV buffer size controls max single-frame burst.
+            // 4Mbits = 500KB max frame, matches MAX_GFX_FRAME_BYTES.
             unsafe {
-                (*encoder_ctx.as_mut_ptr()).rc_buffer_size = 600_000;
+                (*encoder_ctx.as_mut_ptr()).rc_buffer_size = 4_000_000;
             }
             opts.set("preset", "ultrafast");
             opts.set("tune", "zerolatency");

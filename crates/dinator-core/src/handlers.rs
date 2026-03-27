@@ -116,8 +116,8 @@ impl CompositorHandler for DinatorState {
                         .unwrap_or(false)
                 });
 
-                // Auto-float windows that have a parent set, or that look like
-                // notification popups (no app_id, small geometry).
+                // Auto-float windows that have a parent set, or that have no
+                // app_id after committing content (notification popups etc.)
                 let app_id = compositor::with_states(toplevel.wl_surface(), |states| {
                     states
                         .data_map
@@ -125,12 +125,12 @@ impl CompositorHandler for DinatorState {
                         .and_then(|d| d.lock().unwrap().app_id.clone())
                 });
                 let win_geo = window.geometry();
-                let looks_like_popup = app_id.is_none()
+                // Windows with rendered content but no app_id are likely popups
+                let no_identity = app_id.is_none()
                     && win_geo.size.w > 0
-                    && win_geo.size.h > 0
-                    && (win_geo.size.w < 500 || win_geo.size.h < 200);
+                    && win_geo.size.h > 0;
 
-                if has_parent || looks_like_popup {
+                if has_parent || no_identity {
                     if let Some(&id) = self.surface_to_id.get(surface) {
                         if !self.floating.contains(&id) {
                             tracing::info!(
@@ -139,23 +139,19 @@ impl CompositorHandler for DinatorState {
                                 w = win_geo.size.w,
                                 h = win_geo.size.h,
                                 parent = has_parent,
+                                no_identity,
                                 "auto-floating popup/child on commit"
                             );
                             self.floating.insert(id);
-                            // Position at the window's committed geometry
-                            // (popups often specify their own position)
                             if let Some(output) = self.get_focused_output() {
-                                let (x, y) = if win_geo.loc.x > 0 || win_geo.loc.y > 0 {
-                                    (win_geo.loc.x, win_geo.loc.y)
-                                } else if let Some(out_geo) = self.space.output_geometry(&output) {
-                                    (
-                                        out_geo.loc.x + (out_geo.size.w - win_geo.size.w) / 2,
-                                        out_geo.loc.y + (out_geo.size.h - win_geo.size.h) / 2,
-                                    )
-                                } else {
-                                    (0, 0)
-                                };
-                                self.space.map_element(window.clone(), (x, y), false);
+                                // Center on output
+                                if let Some(out_geo) = self.space.output_geometry(&output) {
+                                    let w = win_geo.size.w.max(100);
+                                    let h = win_geo.size.h.max(100);
+                                    let cx = out_geo.loc.x + (out_geo.size.w - w) / 2;
+                                    let cy = out_geo.loc.y + (out_geo.size.h - h) / 2;
+                                    self.space.map_element(window.clone(), (cx, cy), false);
+                                }
                                 self.space.raise_element(&window, true);
                                 self.retile(&output);
                             }
