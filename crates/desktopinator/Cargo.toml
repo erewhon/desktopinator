@@ -30,3 +30,5 @@ rcgen = "0.14"
 dinator-encode = { path = "../dinator-encode", features = ["ffmpeg"] }
 ironrdp-rdpsnd = "0.7"
 pipewire = { version = "0.9", features = ["v0_3_33"] }
+serde = { workspace = true }
+toml = "0.8"

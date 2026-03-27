@@ -1,5 +1,6 @@
 mod audio;
 mod clipboard;
+mod config;
 mod displaycontrol;
 mod gfx;
 mod ipc;
@@ -202,21 +203,22 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let headless = args.iter().any(|a| a == "--headless");
+    let cfg = config::load_config();
 
     if headless {
-        // Parse --vnc-port PORT (default 5900)
+        // Parse --vnc-port PORT (CLI overrides config, default 5900)
         let vnc_port = args
             .windows(2)
             .find(|w| w[0] == "--vnc-port")
             .and_then(|w| w[1].parse::<u16>().ok())
-            .unwrap_or(5900);
+            .unwrap_or(cfg.vnc.port);
 
-        // Parse --rdp-port PORT (default 3389)
+        // Parse --rdp-port PORT (CLI overrides config, default 3389)
         let rdp_port = args
             .windows(2)
             .find(|w| w[0] == "--rdp-port")
             .and_then(|w| w[1].parse::<u16>().ok())
-            .unwrap_or(3389);
+            .unwrap_or(cfg.rdp.port);
 
         // Parse --resolution WxH (default 1920x1080)
         let (width, height) = args
@@ -258,14 +260,15 @@ fn main() -> anyhow::Result<()> {
             encoder_pref,
             one_shot,
             fps,
+            &cfg,
         )
     } else {
         info!("starting desktopinator (winit)");
-        run_winit()
+        run_winit(&cfg)
     }
 }
 
-fn run_winit() -> anyhow::Result<()> {
+fn run_winit(cfg: &config::Config) -> anyhow::Result<()> {
     use smithay::backend::winit::{self, WinitEvent};
 
     let (mut backend, winit_evt_loop) =
@@ -331,6 +334,23 @@ fn run_winit() -> anyhow::Result<()> {
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
     state.register_output(&output);
+
+    // Apply config file settings
+    if let Some(ref bg_spec) = cfg.background {
+        if let Some(bg) = dinator_core::parse_background(bg_spec) {
+            state.set_background(bg);
+        }
+    }
+    if let Some(gap) = cfg.gap {
+        state.set_layout_gap(gap);
+        state.retile(&output);
+    }
+    if let Some(ref layout_name) = cfg.layout {
+        if state.set_layout(layout_name) {
+            state.retile(&output);
+        }
+    }
+
     state.seat.add_keyboard(Default::default(), 200, 25)?;
     state.seat.add_pointer();
 
@@ -511,6 +531,7 @@ fn run_headless(
     encoder_pref: &str,
     one_shot: bool,
     fps: u32,
+    cfg: &config::Config,
 ) -> anyhow::Result<()> {
     use smithay::backend::allocator::Fourcc;
     use smithay::backend::egl::context::EGLContext;
@@ -867,6 +888,30 @@ fn run_headless(
     output.create_global::<DinatorState>(&display_handle);
     state.space.map_output(&output, (0, 0));
     state.register_output(&output);
+
+    // Apply config file settings
+    if let Some(ref bg_spec) = cfg.background {
+        if let Some(bg) = dinator_core::parse_background(bg_spec) {
+            state.set_background(bg);
+            info!(background = %bg_spec, "config: applied background");
+        } else {
+            tracing::warn!(background = %bg_spec, "config: invalid background spec");
+        }
+    }
+    if let Some(gap) = cfg.gap {
+        state.set_layout_gap(gap);
+        state.retile(&output);
+        info!(gap, "config: applied gap");
+    }
+    if let Some(ref layout_name) = cfg.layout {
+        if state.set_layout(layout_name) {
+            state.retile(&output);
+            info!(layout = %layout_name, "config: applied layout");
+        } else {
+            tracing::warn!(layout = %layout_name, "config: unknown layout");
+        }
+    }
+
     state.seat.add_keyboard(Default::default(), 200, 25)?;
     state.seat.add_pointer();
 
