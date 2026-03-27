@@ -1892,6 +1892,8 @@ fn run_headless(
     let encoder_pref_owned = encoder_pref.to_string();
     let mut encode_frame_count: u64 = 0;
     let mut gfx_frames_dropped: u64 = 0;
+    let mut last_keyframe_time = std::time::Instant::now();
+    let keyframe_cooldown = Duration::from_secs(2);
 
     let frame_interval = Duration::from_micros(1_000_000 / fps as u64);
     info!(
@@ -2282,9 +2284,12 @@ fn run_headless(
                                             "GFX: dropping oversized P-frame"
                                         );
                                     }
-                                    // Force keyframe on next encode so the stream
-                                    // self-heals after dropped P-frames
-                                    encoder.force_keyframe();
+                                    // Force a recovery keyframe, but only if we haven't
+                                    // sent one recently — avoids overwhelming the DVC
+                                    // channel during rapid animation (GIFs, video, etc.)
+                                    if last_keyframe_time.elapsed() > keyframe_cooldown {
+                                        encoder.force_keyframe();
+                                    }
                                     gfx_state_render.lock().unwrap().next_frame_id += 1;
                                 } else {
                                     let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
@@ -2314,6 +2319,9 @@ fn run_headless(
                                                         channel_id,
                                                         data: gfx_data,
                                                     });
+                                                    if encoded.is_keyframe {
+                                                        last_keyframe_time = std::time::Instant::now();
+                                                    }
                                                     gfx_frames_dropped = 0;
                                                 }
                                             }
