@@ -671,6 +671,7 @@ impl WlrLayerShellHandler for DinatorState {
         if let Some(ref output) = output {
             let mut layer_map = layer_map_for_output(output);
             let result = layer_map.map_layer(&desktop_surface);
+            layer_map.arrange();
             tracing::info!(
                 result = ?result,
                 layers = layer_map.layers().count(),

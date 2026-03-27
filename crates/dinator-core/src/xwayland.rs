@@ -321,15 +321,29 @@ impl DinatorState {
         // Map and retile
         let output = self.get_focused_output();
         if should_float {
-            // Center floating dialog on the focused output
+            // X11 dialogs often report 1x1 geometry at map time.
+            // Use a reasonable default size and center on the output.
             let geo = window.geometry();
+            let (win_w, win_h) = if geo.size.w > 10 && geo.size.h > 10 {
+                (geo.size.w, geo.size.h)
+            } else {
+                // Default dialog size: 2/3 of output
+                if let Some(ref out) = output {
+                    if let Some(out_geo) = self.space.output_geometry(out) {
+                        (out_geo.size.w * 2 / 3, out_geo.size.h * 2 / 3)
+                    } else {
+                        (800, 600)
+                    }
+                } else {
+                    (800, 600)
+                }
+            };
+
             let (cx, cy) = if let Some(ref out) = output {
                 if let Some(out_geo) = self.space.output_geometry(out) {
-                    let w = geo.size.w.max(1);
-                    let h = geo.size.h.max(1);
                     (
-                        out_geo.loc.x + (out_geo.size.w - w) / 2,
-                        out_geo.loc.y + (out_geo.size.h - h) / 2,
+                        out_geo.loc.x + (out_geo.size.w - win_w) / 2,
+                        out_geo.loc.y + (out_geo.size.h - win_h) / 2,
                     )
                 } else {
                     (geo.loc.x, geo.loc.y)
@@ -337,7 +351,16 @@ impl DinatorState {
             } else {
                 (geo.loc.x, geo.loc.y)
             };
-            info!(x = cx, y = cy, w = geo.size.w, h = geo.size.h, "XWayland: floating at");
+
+            info!(x = cx, y = cy, w = win_w, h = win_h, "XWayland: floating at");
+
+            // Configure the X11 window with the computed size and position
+            let rect = smithay::utils::Rectangle::new(
+                (cx, cy).into(),
+                (win_w, win_h).into(),
+            );
+            let _ = window.configure(Some(rect));
+
             self.space.map_element(smithay_window, (cx, cy), false);
             if let Some(w) = self.window_map.get(&id) {
                 self.space.raise_element(w, true);

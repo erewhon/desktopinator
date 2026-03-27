@@ -564,7 +564,16 @@ impl DinatorState {
         let tab_height = 28; // matches StackedLayout default
         let gap = os.layout.gap();
 
-        let tabs: Vec<(String, String, bool)> = ws_windows
+        let tiled_windows: Vec<WindowId> = ws_windows
+            .iter()
+            .copied()
+            .filter(|id| !self.floating.contains(id) && !self.fullscreen.contains(id))
+            .collect();
+        if tiled_windows.len() < 2 {
+            return None;
+        }
+
+        let tabs: Vec<(String, String, bool)> = tiled_windows
             .iter()
             .enumerate()
             .filter_map(|(i, &id)| {
