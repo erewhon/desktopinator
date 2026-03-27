@@ -150,35 +150,29 @@ fn build_render_elements(
         }
     }
 
-    // Draw borders around floating windows so they stand out from tiled content.
-    // These go BEHIND space elements (which include the window surfaces) so the
-    // border peeks out around the edges of the floating window.
-    {
-        let num_space = elements.len(); // insert after space elements
-        for &id in &state.floating {
-            if let Some(window) = state.window_map.get(&id) {
-                if let Some(geo) = state.space.element_geometry(window) {
-                    if output_geo.overlaps(geo) && geo.size.w > 10 && geo.size.h > 10 {
-                        let bw = 3;
-                        let float_border_color = [0.35f32, 0.4, 0.6, 1.0];
-                        let buf = SolidColorBuffer::new(
-                            (geo.size.w + 2 * bw, geo.size.h + 2 * bw),
-                            float_border_color,
-                        );
-                        let loc: Point<i32, Physical> = (
-                            geo.loc.x - bw - output_geo.loc.x,
-                            geo.loc.y - bw - output_geo.loc.y,
+    // Draw borders around floating windows as edge strips ON TOP of window content
+    for &id in &state.floating {
+        if let Some(window) = state.window_map.get(&id) {
+            if let Some(geo) = state.space.element_geometry(window) {
+                if output_geo.overlaps(geo) && geo.size.w > 10 && geo.size.h > 10 {
+                    let bw = 3;
+                    let rx = geo.loc.x - output_geo.loc.x;
+                    let ry = geo.loc.y - output_geo.loc.y;
+                    let rw = geo.size.w;
+                    let rh = geo.size.h;
+                    let c = [0.35f32, 0.4, 0.65, 1.0];
+
+                    let mk = |w, h, x, y| {
+                        let buf = SolidColorBuffer::new((w, h), c);
+                        let loc: Point<i32, Physical> = (x, y).into();
+                        OutputRenderElements::Border(
+                            SolidColorRenderElement::from_buffer(&buf, loc, 1.0, 1.0, Kind::Unspecified),
                         )
-                            .into();
-                        elements.insert(
-                            num_space,
-                            OutputRenderElements::Border(
-                                SolidColorRenderElement::from_buffer(
-                                    &buf, loc, 1.0, 1.0, Kind::Unspecified,
-                                ),
-                            ),
-                        );
-                    }
+                    };
+                    elements.insert(0, mk(rw, bw, rx, ry));            // top
+                    elements.insert(0, mk(rw, bw, rx, ry + rh - bw));  // bottom
+                    elements.insert(0, mk(bw, rh, rx, ry));            // left
+                    elements.insert(0, mk(bw, rh, rx + rw - bw, ry));  // right
                 }
             }
         }
@@ -2274,7 +2268,7 @@ fn run_headless(
                                 }
 
                                 let h264_len = encoded.data.len();
-                                const MAX_GFX_FRAME_BYTES: usize = 80_000;
+                                const MAX_GFX_FRAME_BYTES: usize = 512_000;
 
                                 if h264_len < 50 && !encoded.is_keyframe {
                                     // No visual change — skip
