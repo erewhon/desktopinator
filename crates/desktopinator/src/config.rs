@@ -32,11 +32,19 @@ impl Default for VncConfig {
 #[serde(default)]
 pub struct RdpConfig {
     pub port: u16,
+    pub adaptive: bool,
+    pub tile_cols: u16,
+    pub tile_rows: u16,
 }
 
 impl Default for RdpConfig {
     fn default() -> Self {
-        Self { port: 3389 }
+        Self {
+            port: 3389,
+            adaptive: false,
+            tile_cols: 4,
+            tile_rows: 3,
+        }
     }
 }
 

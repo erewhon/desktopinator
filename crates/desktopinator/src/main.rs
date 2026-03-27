@@ -1,3 +1,4 @@
+mod adaptive;
 mod audio;
 mod clipboard;
 mod config;
@@ -1889,11 +1890,19 @@ fn run_headless(
 
     // Per-output H.264 encoders — created on demand when outputs appear
     let mut h264_encoders: HashMap<String, Box<dyn dinator_encode::Encoder>> = HashMap::new();
+    // Adaptive tile grids — used when config.rdp.adaptive is true
+    let mut tile_grids: HashMap<String, adaptive::TileGrid> = HashMap::new();
+    let use_adaptive = cfg.rdp.adaptive;
+    let tile_cols = cfg.rdp.tile_cols;
+    let tile_rows = cfg.rdp.tile_rows;
     let encoder_pref_owned = encoder_pref.to_string();
     let mut encode_frame_count: u64 = 0;
     let mut gfx_frames_dropped: u64 = 0;
     let mut last_keyframe_time = std::time::Instant::now();
     let keyframe_cooldown = Duration::from_secs(2);
+    if use_adaptive {
+        info!(tile_cols, tile_rows, "adaptive tile encoding enabled");
+    }
 
     let frame_interval = Duration::from_micros(1_000_000 / fps as u64);
     info!(
@@ -2122,6 +2131,9 @@ fn run_headless(
                         for enc in h264_encoders.values_mut() {
                             enc.force_keyframe();
                         }
+                        for grid in tile_grids.values_mut() {
+                            grid.force_all_keyframes();
+                        }
                     }
                 }
 
@@ -2139,6 +2151,7 @@ fn run_headless(
                 width: u16,
                 height: u16,
                 pixels: Vec<u8>, // RGBA from GL readback
+                damage_rects: Vec<Rectangle<i32, Physical>>,
             }
             let mut dirty_outputs: Vec<DirtyOutput> = Vec::new();
 
@@ -2151,7 +2164,7 @@ fn run_headless(
 
                 match renderer.bind(rb) {
                     Ok(mut target) => {
-                        let has_damage = if let Some(elements) = build_render_elements(&mut renderer, state, o) {
+                        let damage_rects: Vec<Rectangle<i32, Physical>> = if let Some(elements) = build_render_elements(&mut renderer, state, o) {
                             match dt.render_output(
                                 &mut renderer,
                                 &mut target,
@@ -2159,14 +2172,16 @@ fn run_headless(
                                 &elements,
                                 background_clear_color(state.background_for_output(o)),
                             ) {
-                                Ok(result) => result.damage.is_some_and(|d| !d.is_empty()),
-                                Err(_) => false,
+                                Ok(result) => result.damage
+                                    .map(|d| d.to_vec())
+                                    .unwrap_or_default(),
+                                Err(_) => Vec::new(),
                             }
                         } else {
-                            false
+                            Vec::new()
                         };
 
-                        if has_damage {
+                        if !damage_rects.is_empty() {
                             let region = Rectangle::from_size(
                                 Size::from((ow as i32, oh as i32)),
                             );
@@ -2179,6 +2194,7 @@ fn run_headless(
                                         width: ow,
                                         height: oh,
                                         pixels: pixels.to_vec(),
+                                        damage_rects,
                                     });
                                 }
                             }
@@ -2208,6 +2224,9 @@ fn run_headless(
                             }
                         }
                         // Force keyframe on all per-output encoders
+                        for grid in tile_grids.values_mut() {
+                            grid.force_all_keyframes();
+                        }
                         for enc in h264_encoders.values_mut() {
                             enc.force_keyframe();
                         }
@@ -2244,7 +2263,6 @@ fn run_headless(
                 let gfx_ready = gfx_state_render.lock().unwrap().ready;
                 if gfx_ready {
                     for d in &dirty_outputs {
-                        let Some(encoder) = h264_encoders.get_mut(&d.name) else { continue };
                         let surface_id = gfx_state_render.lock().unwrap()
                             .surface_id_for_output(&d.name)
                             .unwrap_or(0);
@@ -2255,87 +2273,141 @@ fn run_headless(
                             chunk.swap(0, 2);
                         }
 
-                        match encoder.encode(&bgra, d.width as u32, d.height as u32) {
-                            Ok(Some(encoded)) => {
-                                encode_frame_count += 1;
+                        if use_adaptive {
+                            // --- Adaptive tile path ---
+                            let grid = tile_grids.entry(d.name.clone()).or_insert_with(|| {
+                                adaptive::TileGrid::new(
+                                    d.name.clone(),
+                                    d.width,
+                                    d.height,
+                                    tile_cols,
+                                    tile_rows,
+                                    &encoder_pref_owned,
+                                )
+                                .expect("failed to create tile grid")
+                            });
+
+                            grid.mark_damage(&d.damage_rects);
+                            grid.stagger_keyframe(encode_frame_count);
+                            let tile_frames = grid.encode_dirty_tiles(&bgra);
+
+                            encode_frame_count += 1;
+
+                            if !tile_frames.is_empty() {
+                                let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
+                                let total_bytes: usize = tile_frames.iter().map(|t| t.data.len()).sum();
+
                                 if encode_frame_count % 60 == 1 {
                                     info!(
                                         output = %d.name,
-                                        encoder = encoder.name(),
-                                        frame = encode_frame_count,
-                                        bytes = encoded.data.len(),
-                                        keyframe = encoded.is_keyframe,
-                                        "H.264 encode"
+                                        frame_id,
+                                        tiles = tile_frames.len(),
+                                        total_bytes,
+                                        "GFX: adaptive tile encode"
                                     );
                                 }
 
-                                let h264_len = encoded.data.len();
-                                const MAX_GFX_FRAME_BYTES: usize = 512_000;
-
-                                if h264_len < 50 && !encoded.is_keyframe {
-                                    // No visual change — skip
-                                } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
-                                    gfx_frames_dropped += 1;
-                                    if gfx_frames_dropped <= 3 || gfx_frames_dropped % 30 == 0 {
-                                        info!(
-                                            output = %d.name,
-                                            h264_bytes = h264_len,
-                                            dropped = gfx_frames_dropped,
-                                            "GFX: dropping oversized P-frame"
-                                        );
-                                    }
-                                    // Force a recovery keyframe, but only if we haven't
-                                    // sent one recently — avoids overwhelming the DVC
-                                    // channel during rapid animation (GIFs, video, etc.)
-                                    if last_keyframe_time.elapsed() > keyframe_cooldown {
-                                        encoder.force_keyframe();
-                                    }
-                                    gfx_state_render.lock().unwrap().next_frame_id += 1;
-                                } else {
-                                    let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
-                                    match gfx::encode_gfx_avc420_frame(
-                                        &encoded.data,
-                                        surface_id,
-                                        d.width,
-                                        d.height,
-                                        frame_id,
-                                    ) {
-                                        Ok(gfx_data) => {
-                                            let channel_id = gfx_state_render.lock().unwrap().channel_id;
-                                            if let Some(channel_id) = channel_id {
-                                                if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
-                                                    if frame_id % 60 == 0 || frame_id <= 5 || encoded.is_keyframe {
-                                                        info!(
-                                                            output = %d.name,
-                                                            frame_id,
-                                                            surface_id,
-                                                            h264_bytes = h264_len,
-                                                            gfx_bytes = gfx_data.len(),
-                                                            keyframe = encoded.is_keyframe,
-                                                            "GFX: sending per-surface frame"
-                                                        );
-                                                    }
-                                                    let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
-                                                        channel_id,
-                                                        data: gfx_data,
-                                                    });
-                                                    if encoded.is_keyframe {
-                                                        last_keyframe_time = std::time::Instant::now();
-                                                    }
-                                                    gfx_frames_dropped = 0;
-                                                }
+                                match gfx::encode_gfx_avc420_tiles(&tile_frames, surface_id, frame_id) {
+                                    Ok(gfx_data) => {
+                                        let channel_id = gfx_state_render.lock().unwrap().channel_id;
+                                        if let Some(channel_id) = channel_id {
+                                            if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
+                                                let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
+                                                    channel_id,
+                                                    data: gfx_data,
+                                                });
                                             }
-                                            gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
                                         }
-                                        Err(e) => {
-                                            tracing::warn!(output = %d.name, error = %e, "GFX frame encode failed");
-                                        }
+                                        gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(output = %d.name, error = %e, "GFX tile encode failed");
                                     }
                                 }
                             }
-                            Ok(None) => {}
-                            Err(e) => {
-                                tracing::warn!(output = %d.name, error = %e, "H.264 encode failed");
+                        } else {
+                            // --- Full-frame path (original) ---
+                            let Some(encoder) = h264_encoders.get_mut(&d.name) else { continue };
+
+                            match encoder.encode(&bgra, d.width as u32, d.height as u32) {
+                                Ok(Some(encoded)) => {
+                                    encode_frame_count += 1;
+                                    if encode_frame_count % 60 == 1 {
+                                        info!(
+                                            output = %d.name,
+                                            encoder = encoder.name(),
+                                            frame = encode_frame_count,
+                                            bytes = encoded.data.len(),
+                                            keyframe = encoded.is_keyframe,
+                                            "H.264 encode"
+                                        );
+                                    }
+
+                                    let h264_len = encoded.data.len();
+                                    const MAX_GFX_FRAME_BYTES: usize = 512_000;
+
+                                    if h264_len < 50 && !encoded.is_keyframe {
+                                        // No visual change — skip
+                                    } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
+                                        gfx_frames_dropped += 1;
+                                        if gfx_frames_dropped <= 3 || gfx_frames_dropped % 30 == 0 {
+                                            info!(
+                                                output = %d.name,
+                                                h264_bytes = h264_len,
+                                                dropped = gfx_frames_dropped,
+                                                "GFX: dropping oversized P-frame"
+                                            );
+                                        }
+                                        if last_keyframe_time.elapsed() > keyframe_cooldown {
+                                            encoder.force_keyframe();
+                                        }
+                                        gfx_state_render.lock().unwrap().next_frame_id += 1;
+                                    } else {
+                                        let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
+                                        match gfx::encode_gfx_avc420_frame(
+                                            &encoded.data,
+                                            surface_id,
+                                            d.width,
+                                            d.height,
+                                            frame_id,
+                                        ) {
+                                            Ok(gfx_data) => {
+                                                let channel_id = gfx_state_render.lock().unwrap().channel_id;
+                                                if let Some(channel_id) = channel_id {
+                                                    if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
+                                                        if frame_id % 60 == 0 || frame_id <= 5 || encoded.is_keyframe {
+                                                            info!(
+                                                                output = %d.name,
+                                                                frame_id,
+                                                                surface_id,
+                                                                h264_bytes = h264_len,
+                                                                gfx_bytes = gfx_data.len(),
+                                                                keyframe = encoded.is_keyframe,
+                                                                "GFX: sending per-surface frame"
+                                                            );
+                                                        }
+                                                        let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
+                                                            channel_id,
+                                                            data: gfx_data,
+                                                        });
+                                                        if encoded.is_keyframe {
+                                                            last_keyframe_time = std::time::Instant::now();
+                                                        }
+                                                        gfx_frames_dropped = 0;
+                                                    }
+                                                }
+                                                gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(output = %d.name, error = %e, "GFX frame encode failed");
+                                            }
+                                        }
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    tracing::warn!(output = %d.name, error = %e, "H.264 encode failed");
+                                }
                             }
                         }
                     }

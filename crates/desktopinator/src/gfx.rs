@@ -661,3 +661,73 @@ pub fn encode_gfx_avc420_frame(
 
     Ok(wrap_zgfx_uncompressed(&raw))
 }
+
+/// Encode multiple tile frames into a single GFX StartFrame/EndFrame.
+/// Each tile becomes a WireToSurface1Pdu with its own destination_rectangle.
+pub fn encode_gfx_avc420_tiles(
+    tiles: &[crate::adaptive::TileFrame],
+    surface_id: u16,
+    frame_id: u32,
+) -> anyhow::Result<Vec<u8>> {
+    if tiles.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut raw = Vec::new();
+
+    let start_frame = gfx::ServerPdu::StartFrame(StartFramePdu {
+        timestamp: Timestamp {
+            milliseconds: 0,
+            seconds: 0,
+            minutes: 0,
+            hours: 0,
+        },
+        frame_id,
+    });
+    let start_bytes =
+        encode_vec(&start_frame).map_err(|e| anyhow::anyhow!("start frame: {e}"))?;
+    raw.extend_from_slice(&start_bytes);
+
+    for tile in tiles {
+        let avc_stream = Avc420BitmapStream {
+            rectangles: vec![InclusiveRectangle {
+                left: 0,
+                top: 0,
+                right: tile.width.saturating_sub(1),
+                bottom: tile.height.saturating_sub(1),
+            }],
+            quant_qual_vals: vec![QuantQuality {
+                quantization_parameter: 22,
+                progressive: false,
+                quality: 100,
+            }],
+            data: &tile.data,
+        };
+
+        let avc_bytes = encode_vec(&avc_stream)
+            .map_err(|e| anyhow::anyhow!("AVC420 tile: {e}"))?;
+
+        let wire = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
+            surface_id,
+            codec_id: Codec1Type::Avc420,
+            pixel_format: PixelFormat::XRgb,
+            destination_rectangle: InclusiveRectangle {
+                left: tile.x,
+                top: tile.y,
+                right: (tile.x + tile.width).saturating_sub(1),
+                bottom: (tile.y + tile.height).saturating_sub(1),
+            },
+            bitmap_data: avc_bytes,
+        });
+
+        let wire_bytes =
+            encode_vec(&wire).map_err(|e| anyhow::anyhow!("wire to surface: {e}"))?;
+        raw.extend_from_slice(&wire_bytes);
+    }
+
+    let end_frame = gfx::ServerPdu::EndFrame(EndFramePdu { frame_id });
+    let end_bytes = encode_vec(&end_frame).map_err(|e| anyhow::anyhow!("end frame: {e}"))?;
+    raw.extend_from_slice(&end_bytes);
+
+    Ok(wrap_zgfx_uncompressed(&raw))
+}
