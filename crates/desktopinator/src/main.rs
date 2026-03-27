@@ -150,6 +150,34 @@ fn build_render_elements(
         }
     }
 
+    // Draw borders around floating windows so they stand out from tiled windows
+    for &id in &state.floating {
+        if let Some(window) = state.window_map.get(&id) {
+            if let Some(geo) = state.space.element_geometry(window) {
+                if output_geo.overlaps(geo) {
+                    let bw = 2;
+                    // Dark border with slight blue tint
+                    let float_border_color = [0.3f32, 0.35, 0.5, 0.9];
+                    let buf = SolidColorBuffer::new(
+                        (geo.size.w + 2 * bw, geo.size.h + 2 * bw),
+                        float_border_color,
+                    );
+                    let loc: Point<i32, Physical> = (
+                        geo.loc.x - bw - output_geo.loc.x,
+                        geo.loc.y - bw - output_geo.loc.y,
+                    )
+                        .into();
+                    // Push behind window content (after space elements)
+                    elements.push(OutputRenderElements::Border(
+                        SolidColorRenderElement::from_buffer(
+                            &buf, loc, 1.0, 1.0, Kind::Unspecified,
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     // Stacked layout: render tab bar above the content area
     if let Some((tabs, tab_h, gap)) = state.stacked_tabs(output) {
         let mode = output.current_mode();

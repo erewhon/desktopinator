@@ -142,48 +142,19 @@ impl XdgShellHandler for DinatorState {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        info!("new toplevel window");
         let window = Window::new_wayland_window(surface.clone());
         let id = Self::next_window_id();
         let ws = self.focused_workspace();
 
-        self.window_map.insert(id, window.clone());
-        self.surface_to_id.insert(surface.wl_surface().clone(), id);
-        self.window_workspace.insert(id, ws);
-        self.ws_window_list_mut(ws).push(id);
-
-        // Mark the toplevel as activated
-        surface.with_pending_state(|state| {
-            state.states.set(xdg_toplevel::State::Activated);
+        // Check if this toplevel has a parent (dialog, notification popup, etc.)
+        let has_parent = compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .map(|d| d.lock().unwrap().parent.is_some())
+                .unwrap_or(false)
         });
 
-        // Map the window and retile
-        let output = self.get_focused_output();
-        self.space.map_element(window, (0, 0), false);
-        if let Some(ref output) = output {
-            // Manually send wl_surface.enter so the client knows its output
-            // before committing a buffer. Without this, Space::refresh() won't
-            // send it because the window's bbox is zero until the first commit,
-            // creating a deadlock with clients that wait for output info.
-            output.enter(surface.wl_surface());
-
-            info!(
-                windows = self.ws_window_list(ws).len(),
-                output = %output.name(),
-                "retiling after new window"
-            );
-            self.retile(output);
-        } else {
-            info!("no output available for tiling");
-        }
-
-        // Give keyboard focus to the new window
-        let serial = SERIAL_COUNTER.next_serial();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
-        }
-
-        // Emit IPC event
         let (app_id, title) = compositor::with_states(surface.wl_surface(), |states| {
             let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
             let attrs = attrs.map(|d| d.lock().unwrap());
@@ -192,6 +163,67 @@ impl XdgShellHandler for DinatorState {
                 attrs.as_ref().and_then(|a| a.title.clone()),
             )
         });
+
+        info!(
+            ?app_id,
+            ?title,
+            has_parent,
+            "new toplevel window"
+        );
+
+        self.window_map.insert(id, window.clone());
+        self.surface_to_id.insert(surface.wl_surface().clone(), id);
+        self.window_workspace.insert(id, ws);
+        self.ws_window_list_mut(ws).push(id);
+
+        // Auto-float child toplevels (dialogs, notification popups)
+        if has_parent {
+            self.floating.insert(id);
+        }
+
+        // Mark the toplevel as activated
+        surface.with_pending_state(|state| {
+            state.states.set(xdg_toplevel::State::Activated);
+        });
+
+        // Map the window and retile
+        let output = self.get_focused_output();
+        if has_parent {
+            // Float centered on the output
+            if let Some(ref out) = output {
+                if let Some(out_geo) = self.space.output_geometry(out) {
+                    let w = out_geo.size.w * 2 / 3;
+                    let h = out_geo.size.h * 2 / 3;
+                    let cx = out_geo.loc.x + (out_geo.size.w - w) / 2;
+                    let cy = out_geo.loc.y + (out_geo.size.h - h) / 2;
+                    surface.with_pending_state(|state| {
+                        state.size = Some((w, h).into());
+                    });
+                    self.space.map_element(window, (cx, cy), false);
+                } else {
+                    self.space.map_element(window, (0, 0), false);
+                }
+            } else {
+                self.space.map_element(window, (0, 0), false);
+            }
+        } else {
+            self.space.map_element(window, (0, 0), false);
+        }
+        if let Some(ref output) = output {
+            output.enter(surface.wl_surface());
+            info!(
+                windows = self.ws_window_list(ws).len(),
+                output = %output.name(),
+                "retiling after new window"
+            );
+            self.retile(output);
+        }
+
+        // Give keyboard focus to the new window
+        let serial = SERIAL_COUNTER.next_serial();
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+        }
 
         // Apply window rules
         let rule = self

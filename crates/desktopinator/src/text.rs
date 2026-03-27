@@ -61,10 +61,12 @@ pub fn render_text(
                 if px < 0 || px >= buf_w || py < 0 || py >= buf_h {
                     continue;
                 }
-                let alpha = bitmap[row * metrics.width + col];
-                if alpha == 0 {
+                let raw_alpha = bitmap[row * metrics.width + col];
+                if raw_alpha == 0 {
                     continue;
                 }
+                // Soften the rendering for a lighter appearance
+                let alpha = (raw_alpha as u16 * 200 / 255) as u8;
                 let offset = ((py * buf_w + px) * 4) as usize;
                 // ARGB8888: [B, G, R, A] in little-endian memory
                 let existing_a = pixels[offset + 3] as u16;
