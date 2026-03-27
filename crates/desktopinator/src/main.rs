@@ -2,6 +2,7 @@ mod audio;
 mod clipboard;
 mod config;
 mod displaycontrol;
+mod text;
 mod gfx;
 mod ipc;
 
@@ -12,6 +13,7 @@ use std::time::Duration;
 use anyhow::Context;
 use dinator_ipc::{IpcCommand, IpcResponse};
 use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
 use smithay::backend::renderer::element::Kind;
@@ -36,6 +38,7 @@ type SpaceElements = SpaceRenderElements<GlesRenderer, WaylandSurfaceRenderEleme
 enum OutputRenderElements {
     Space(SpaceElements),
     Border(SolidColorRenderElement),
+    Memory(MemoryRenderBufferRenderElement<GlesRenderer>),
 }
 
 impl smithay::backend::renderer::element::Element for OutputRenderElements {
@@ -43,24 +46,28 @@ impl smithay::backend::renderer::element::Element for OutputRenderElements {
         match self {
             Self::Space(e) => e.id(),
             Self::Border(e) => e.id(),
+            Self::Memory(e) => e.id(),
         }
     }
     fn current_commit(&self) -> smithay::backend::renderer::utils::CommitCounter {
         match self {
             Self::Space(e) => e.current_commit(),
             Self::Border(e) => e.current_commit(),
+            Self::Memory(e) => e.current_commit(),
         }
     }
     fn geometry(&self, scale: smithay::utils::Scale<f64>) -> Rectangle<i32, Physical> {
         match self {
             Self::Space(e) => e.geometry(scale),
             Self::Border(e) => e.geometry(scale),
+            Self::Memory(e) => e.geometry(scale),
         }
     }
     fn src(&self) -> Rectangle<f64, smithay::utils::Buffer> {
         match self {
             Self::Space(e) => e.src(),
             Self::Border(e) => e.src(),
+            Self::Memory(e) => e.src(),
         }
     }
 }
@@ -77,6 +84,14 @@ impl RenderElement<GlesRenderer> for OutputRenderElements {
         match self {
             Self::Space(e) => e.draw(frame, src, dst, damage, opaque_regions),
             Self::Border(e) => <SolidColorRenderElement as RenderElement<GlesRenderer>>::draw(
+                e,
+                frame,
+                src,
+                dst,
+                damage,
+                opaque_regions,
+            ),
+            Self::Memory(e) => RenderElement::<GlesRenderer>::draw(
                 e,
                 frame,
                 src,
@@ -135,45 +150,98 @@ fn build_render_elements(
         }
     }
 
-    // Stacked layout: render title bars over non-focused tab windows
-    for (i, (_app_id, _title, x, y, w, h)) in state.stacked_tab_bars(output).iter().enumerate() {
-        let rel_x = x - output_geo.loc.x;
-        let rel_y = y - output_geo.loc.y;
+    // Stacked layout: render tab bar above the content area
+    if let Some((tabs, tab_h, gap)) = state.stacked_tabs(output) {
+        let mode = output.current_mode();
+        let output_w = mode.map(|m| m.size.w).unwrap_or(1920);
 
-        // Tab background — subtle dark with slight variation per tab
-        let base = 0.18 + (i as f32 * 0.02).min(0.08);
-        let tab_bg_color = [base, base, base + 0.02, 1.0];
-        let tab_bg = SolidColorBuffer::new((*w, *h), tab_bg_color);
-        let tab_loc: Point<i32, Physical> = (rel_x, rel_y).into();
-        elements.insert(
-            0,
-            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
-                &tab_bg, tab_loc, 1.0, 1.0, Kind::Unspecified,
-            )),
-        );
+        for (i, (app_id, title, is_focused)) in tabs.iter().enumerate() {
+            let tab_x = gap;
+            let tab_y = gap + i as i32 * tab_h;
+            let tab_w = output_w - 2 * gap;
 
-        // Accent stripe on the left edge
-        let accent_color = [0.4f32, 0.6, 0.9, 1.0];
-        let stripe_w = 3;
-        let stripe = SolidColorBuffer::new((stripe_w, *h), accent_color);
-        let stripe_loc: Point<i32, Physical> = (rel_x, rel_y).into();
-        elements.insert(
-            0,
-            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
-                &stripe, stripe_loc, 1.0, 1.0, Kind::Unspecified,
-            )),
-        );
+            // Tab background — inactive tabs slightly translucent
+            let bg_color = if *is_focused {
+                [0.25f32, 0.28, 0.38, 1.0]
+            } else {
+                [0.16, 0.17, 0.21, 0.88]
+            };
+            let bg = SolidColorBuffer::new((tab_w, tab_h), bg_color);
+            let loc: Point<i32, Physical> = (tab_x, tab_y).into();
+            elements.insert(
+                0,
+                OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                    &bg, loc, 1.0, 1.0, Kind::Unspecified,
+                )),
+            );
 
-        // Bottom separator line
-        let sep_color = [0.12f32, 0.12, 0.14, 1.0];
-        let sep = SolidColorBuffer::new((*w, 1), sep_color);
-        let sep_loc: Point<i32, Physical> = (rel_x, rel_y + h - 1).into();
-        elements.insert(
-            0,
-            OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
-                &sep, sep_loc, 1.0, 1.0, Kind::Unspecified,
-            )),
-        );
+            // Left accent stripe
+            let accent = if *is_focused {
+                [0.4f32, 0.6, 0.9, 1.0]
+            } else {
+                [0.3, 0.35, 0.5, 0.5]
+            };
+            let stripe = SolidColorBuffer::new((3, tab_h), accent);
+            let stripe_loc: Point<i32, Physical> = (tab_x, tab_y).into();
+            elements.insert(
+                0,
+                OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                    &stripe, stripe_loc, 1.0, 1.0, Kind::Unspecified,
+                )),
+            );
+
+            // Bottom separator
+            let sep = SolidColorBuffer::new((tab_w, 1), [0.1f32, 0.1, 0.12, 1.0]);
+            let sep_loc: Point<i32, Physical> = (tab_x, tab_y + tab_h - 1).into();
+            elements.insert(
+                0,
+                OutputRenderElements::Border(SolidColorRenderElement::from_buffer(
+                    &sep, sep_loc, 1.0, 1.0, Kind::Unspecified,
+                )),
+            );
+
+            // Title text
+            let label = if title.is_empty() {
+                app_id.clone()
+            } else if app_id.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}  —  {app_id}")
+            };
+            if !label.is_empty() {
+                let text_color = if *is_focused {
+                    [220u8, 225, 240]
+                } else {
+                    [160, 165, 180]
+                };
+                let text_x = tab_x + 10; // padding after accent stripe
+                let text_max_w = tab_w - 16;
+                let (pixels, tw, th) = text::render_text(&label, 14.0, text_color, text_max_w, tab_h);
+                if tw > 0 && th > 0 {
+                    use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+                    let buf = MemoryRenderBuffer::from_slice(
+                        &pixels,
+                        smithay::backend::allocator::Fourcc::Argb8888,
+                        (tw, th),
+                        1,
+                        Transform::Normal,
+                        None,
+                    );
+                    let text_loc: Point<f64, Physical> = (text_x as f64, tab_y as f64).into();
+                    if let Ok(el) = MemoryRenderBufferRenderElement::from_buffer(
+                        renderer,
+                        text_loc,
+                        &buf,
+                        None,
+                        None,
+                        None,
+                        Kind::Unspecified,
+                    ) {
+                        elements.insert(0, OutputRenderElements::Memory(el));
+                    }
+                }
+            }
+        }
     }
 
     // Render cursor as a small white square at pointer position (only on the output containing it)

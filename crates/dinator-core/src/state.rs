@@ -547,41 +547,45 @@ impl DinatorState {
             .unwrap_or("column")
     }
 
-    /// Return tab bar info for stacked layout: (app_id, title, x, y, w, h)
-    /// for each non-focused window in the tab area. Empty if not stacked layout.
-    pub fn stacked_tab_bars(&self, output: &Output) -> Vec<(String, String, i32, i32, i32, i32)> {
-        if self.layout_name_for_output(output) != "stacked" {
-            return Vec::new();
+    /// Return tab bar info for stacked layout: Vec of (app_id, title, is_focused)
+    /// for ALL windows in order. Also returns (tab_height, gap, output_geo) for positioning.
+    /// Empty if not stacked layout or < 2 windows.
+    pub fn stacked_tabs(&self, output: &Output) -> Option<(Vec<(String, String, bool)>, i32, i32)> {
+        let os = self.output_states.get(&output.name())?;
+        if os.layout.name() != "stacked" {
+            return None;
         }
-        let ws = self.output_states.get(&output.name())
-            .map(|s| s.active_workspace)
-            .unwrap_or(1);
+        let ws = os.active_workspace;
         let ws_windows = self.ws_window_list(ws);
         if ws_windows.len() < 2 {
-            return Vec::new();
+            return None;
         }
-        // Non-focused windows are indices 1.. in stacked layout
-        let mut tabs = Vec::new();
-        for &id in &ws_windows[1..] {
-            if let Some(window) = self.window_map.get(&id) {
-                if let Some(geo) = self.space.element_geometry(window) {
-                    let (app_id, title) = Self::window_wl_surface(window)
-                        .map(|surface| {
-                            compositor::with_states(&surface, |states| {
-                                let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
-                                let attrs = attrs.map(|d| d.lock().unwrap());
-                                (
-                                    attrs.as_ref().and_then(|a| a.app_id.clone()).unwrap_or_default(),
-                                    attrs.as_ref().and_then(|a| a.title.clone()).unwrap_or_default(),
-                                )
-                            })
+
+        let tab_height = 24; // matches StackedLayout default
+        let gap = os.layout.gap();
+
+        let tabs: Vec<(String, String, bool)> = ws_windows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &id)| {
+                let window = self.window_map.get(&id)?;
+                let (app_id, title) = Self::window_wl_surface(window)
+                    .map(|surface| {
+                        compositor::with_states(&surface, |states| {
+                            let attrs = states.data_map.get::<XdgToplevelSurfaceData>();
+                            let attrs = attrs.map(|d| d.lock().unwrap());
+                            (
+                                attrs.as_ref().and_then(|a| a.app_id.clone()).unwrap_or_default(),
+                                attrs.as_ref().and_then(|a| a.title.clone()).unwrap_or_default(),
+                            )
                         })
-                        .unwrap_or_default();
-                    tabs.push((app_id, title, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h));
-                }
-            }
-        }
-        tabs
+                    })
+                    .unwrap_or_default();
+                Some((app_id, title, i == 0))
+            })
+            .collect();
+
+        Some((tabs, tab_height, gap))
     }
 
     pub fn grow_master(&mut self) -> bool {
@@ -952,6 +956,16 @@ impl DinatorState {
                         (placement.rect.width, placement.rect.height).into(),
                     );
                     let _ = x11.configure(Some(rect));
+                }
+            }
+        }
+
+        // In stacked/monocle layouts, raise the focused window (index 0) above others
+        let layout_name = self.output_states.get(&output_name).map(|s| s.layout.name());
+        if matches!(layout_name, Some("stacked") | Some("monocle")) {
+            if let Some(&first_id) = tiled_windows.first() {
+                if let Some(window) = self.window_map.get(&first_id) {
+                    self.space.raise_element(window, false);
                 }
             }
         }
