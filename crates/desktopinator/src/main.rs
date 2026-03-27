@@ -2100,6 +2100,9 @@ fn run_headless(
                                             "GFX: dropping oversized P-frame"
                                         );
                                     }
+                                    // Force keyframe on next encode so the stream
+                                    // self-heals after dropped P-frames
+                                    encoder.force_keyframe();
                                     gfx_state_render.lock().unwrap().next_frame_id += 1;
                                 } else {
                                     let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
