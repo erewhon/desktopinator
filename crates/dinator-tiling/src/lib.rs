@@ -183,15 +183,10 @@ impl Layout for ColumnLayout {
 
 /// Monocle layout: every window fills the entire output area.
 /// Only the focused window is typically visible (compositor handles z-order).
+#[derive(Default)]
 pub struct MonocleLayout {
     /// Gap in pixels around the edges.
     pub gap: i32,
-}
-
-impl Default for MonocleLayout {
-    fn default() -> Self {
-        Self { gap: 0 }
-    }
 }
 
 impl Layout for MonocleLayout {
