@@ -170,6 +170,8 @@ pub struct DinatorState {
     // Floating & fullscreen (global window properties)
     pub floating: HashSet<WindowId>,
     pub fullscreen: HashSet<WindowId>,
+    /// Commit count per window — used to detect windows that never set app_id.
+    pub window_commits: HashMap<WindowId, u32>,
 
     // IPC event broadcasting
     pub event_broadcaster: EventBroadcaster,
@@ -262,6 +264,7 @@ impl DinatorState {
             surface_to_id: HashMap::new(),
             floating: HashSet::new(),
             fullscreen: HashSet::new(),
+            window_commits: HashMap::new(),
             event_broadcaster: Arc::new(Mutex::new(Vec::new())),
             plugin_runtime: None,
             plugin_keybindings: Vec::new(),

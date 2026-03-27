@@ -116,38 +116,54 @@ impl CompositorHandler for DinatorState {
                         .unwrap_or(false)
                 });
 
-                // Auto-float windows that have a parent set, or that have no
-                // app_id after committing content (notification popups etc.)
-                let app_id = compositor::with_states(toplevel.wl_surface(), |states| {
-                    states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .and_then(|d| d.lock().unwrap().app_id.clone())
-                });
-                let win_geo = window.geometry();
-                // Windows with rendered content but no app_id are likely popups
-                let no_identity = app_id.is_none()
-                    && win_geo.size.w > 0
-                    && win_geo.size.h > 0;
+                // Track commits per window and auto-float windows that have a
+                // parent set, or that still have no app_id after several commits
+                // (notification popups, Firefox alerts, etc.)
+                let should_auto_float = if let Some(&id) = self.surface_to_id.get(surface) {
+                    let count = self.window_commits.entry(id).or_insert(0);
+                    *count += 1;
 
-                if has_parent || no_identity {
+                    if self.floating.contains(&id) {
+                        false
+                    } else if has_parent {
+                        true
+                    } else if *count == 3 {
+                        // After 3 commits, check if app_id is still missing
+                        let app_id = compositor::with_states(toplevel.wl_surface(), |states| {
+                            states
+                                .data_map
+                                .get::<XdgToplevelSurfaceData>()
+                                .and_then(|d| d.lock().unwrap().app_id.clone())
+                        });
+                        if app_id.is_none() {
+                            tracing::info!(id = id.0, commits = *count, "window has no app_id after 3 commits");
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if should_auto_float {
                     if let Some(&id) = self.surface_to_id.get(surface) {
                         if !self.floating.contains(&id) {
+                            let geo = window.geometry();
                             tracing::info!(
                                 id = id.0,
-                                ?app_id,
-                                w = win_geo.size.w,
-                                h = win_geo.size.h,
-                                parent = has_parent,
-                                no_identity,
+                                w = geo.size.w,
+                                h = geo.size.h,
                                 "auto-floating popup/child on commit"
                             );
                             self.floating.insert(id);
                             if let Some(output) = self.get_focused_output() {
                                 // Center on output
                                 if let Some(out_geo) = self.space.output_geometry(&output) {
-                                    let w = win_geo.size.w.max(100);
-                                    let h = win_geo.size.h.max(100);
+                                    let w = geo.size.w.max(100);
+                                    let h = geo.size.h.max(100);
                                     let cx = out_geo.loc.x + (out_geo.size.w - w) / 2;
                                     let cy = out_geo.loc.y + (out_geo.size.h - h) / 2;
                                     self.space.map_element(window.clone(), (cx, cy), false);
