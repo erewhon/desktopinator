@@ -233,8 +233,21 @@ impl XWaylandShellHandler for DinatorState {
         info!(
             title = ?surface.title(),
             class = ?surface.class(),
+            override_redirect = surface.is_override_redirect(),
             "XWayland: surface associated"
         );
+
+        // Already mapped? Skip.
+        if self.x11_surface_to_id.contains_key(&surface.window_id()) {
+            return;
+        }
+
+        // Override-redirect windows (menus, tooltips) may have been deferred
+        // because wl_surface wasn't ready when map_window_notify fired.
+        if surface.is_override_redirect() {
+            self.map_x11_override_redirect(surface);
+            return;
+        }
 
         // Check if this window was waiting for surface pairing
         let was_pending = self
