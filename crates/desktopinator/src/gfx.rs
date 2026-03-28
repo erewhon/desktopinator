@@ -842,9 +842,16 @@ pub fn encode_gfx_avc444_frame(
     let avc_bytes = encode_vec(&avc444)
         .map_err(|e| anyhow::anyhow!("failed to encode AVC444 stream: {e}"))?;
 
+    // Use AVC444v2 (0x000F) for simpler chroma packing, or AVC444 (0x000E) for LC=1
+    let codec_id = if chroma_h264.is_some() {
+        Codec1Type::Avc444v2
+    } else {
+        Codec1Type::Avc444
+    };
+
     let wire_to_surface = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
         surface_id,
-        codec_id: Codec1Type::Avc444,
+        codec_id,
         pixel_format: PixelFormat::XRgb,
         destination_rectangle: InclusiveRectangle {
             left: 0,

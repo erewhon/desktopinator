@@ -2391,10 +2391,10 @@ fn run_headless(
                                         drop(gfx_lock);
 
                                         let gfx_result = if use_avc444 {
-                                            // AVC444 luma-only (LC=1) — chroma stream
-                                            // packing (B4-B7) needs more work to match
-                                            // the exact MS-RDPEGFX spec. LC=1 sends our
-                                            // existing YUV420 H.264 with AVC444 codec ID.
+                                            // AVC444 luma-only (LC=1) — dual-stream chroma
+                                            // requires shared encoder state between streams
+                                            // which isn't feasible with independent encoders.
+                                            // LC=1 still benefits from the AVC444 codec path.
                                             gfx::encode_gfx_avc444_frame(
                                                 &encoded.data,
                                                 None,

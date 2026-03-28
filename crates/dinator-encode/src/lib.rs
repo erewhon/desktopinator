@@ -52,18 +52,24 @@ pub trait Encoder: Send {
     fn name(&self) -> &str;
 }
 
-/// Pack the AVC444 chroma residual stream (stream 2) from full-resolution U444/V444 planes.
+/// Pack the AVC444v2 chroma residual stream (stream 2) from full-resolution U444/V444 planes.
 ///
-/// Takes the full-resolution U and V planes (width*height each) and packs them
-/// into a YUV420-shaped buffer suitable for encoding with a standard H.264 encoder.
+/// Implements the MS-RDPEGFX 3.3.8.3.3 "YUV420p Stream Combination for YUV444v2 mode":
 ///
-/// The packing follows the MS-RDPEGFX AVC444 B4-B7 scheme:
-/// - "Y" plane of stream 2: odd-column U and V values, interleaved in 8-row blocks
-/// - "U" plane: odd-row, even-column U values (quarter res)
-/// - "V" plane: odd-row, even-column V values (quarter res)
+/// Stream 2 Y plane (full resolution, width x height):
+///   Left half:  U444 at odd columns [2x+1, y] for all rows
+///   Right half: V444 at odd columns [2x+1, y] for all rows
+///
+/// Stream 2 U plane (quarter resolution, width/2 x height/2):
+///   Left quarter:  U444[4k,   2y+1] (odd rows, every 4th col offset 0)
+///   Right quarter: V444[4k,   2y+1] (odd rows, every 4th col offset 0)
+///
+/// Stream 2 V plane (quarter resolution, width/2 x height/2):
+///   Left quarter:  U444[4k+2, 2y+1] (odd rows, every 4th col offset 2)
+///   Right quarter: V444[4k+2, 2y+1] (odd rows, every 4th col offset 2)
 ///
 /// `chroma_yuv420` must be at least width*height*3/2 bytes.
-pub fn pack_avc444_chroma(
+pub fn pack_avc444v2_chroma(
     u444: &[u8],
     v444: &[u8],
     width: u32,
@@ -72,56 +78,48 @@ pub fn pack_avc444_chroma(
 ) {
     let w = width as usize;
     let h = height as usize;
+    let half_w = w / 2;
+    let half_h = h / 2;
     let y_size = w * h;
-    let uv_size = (w / 2) * (h / 2);
+    let uv_size = half_w * half_h;
 
     let (y_out, rest) = chroma_yuv420.split_at_mut(y_size);
     let (u_out, v_out) = rest.split_at_mut(uv_size);
 
-    // "Y" plane of stream 2: pack odd-column chroma values
-    // For each row, take U/V values at odd columns
-    // Interleave in 16-line groups: lines 0-7 = U odd-col, lines 8-15 = V odd-col
+    // Y plane: left half = U444 odd columns, right half = V444 odd columns
     for row in 0..h {
-        let block_group = row / 16;
-        let line_in_group = row % 16;
-        let is_v = line_in_group >= 8;
-        let src_row = block_group * 16 + if is_v { line_in_group - 8 } else { line_in_group };
-        if src_row >= h {
-            continue;
-        }
-
-        for col in 0..w {
-            let src_col = col * 2 + 1; // odd columns
-            if src_col >= w {
-                y_out[row * w + col] = 128;
-                continue;
-            }
-            let src_idx = src_row * w + src_col;
-            y_out[row * w + col] = if is_v {
-                if src_idx < v444.len() { v444[src_idx] } else { 128 }
-            } else {
-                if src_idx < u444.len() { u444[src_idx] } else { 128 }
-            };
+        for col in 0..half_w {
+            let src_col = col * 2 + 1; // odd column in full-res
+            let src_idx = row * w + src_col.min(w - 1);
+            // Left half: U odd-col
+            y_out[row * w + col] = if src_idx < u444.len() { u444[src_idx] } else { 128 };
+            // Right half: V odd-col
+            y_out[row * w + half_w + col] = if src_idx < v444.len() { v444[src_idx] } else { 128 };
         }
     }
 
-    // "U" plane: odd-row, even-column U values (quarter resolution)
-    for row in 0..(h / 2) {
-        for col in 0..(w / 2) {
-            let src_row = row * 2 + 1; // odd rows
-            let src_col = col * 2;     // even columns
-            let src_idx = src_row * w + src_col;
-            u_out[row * (w / 2) + col] = if src_idx < u444.len() { u444[src_idx] } else { 128 };
+    // U plane: left = U444[4k, odd_y], right = V444[4k, odd_y]
+    let quarter_w = half_w / 2;
+    for row in 0..half_h {
+        let src_row = row * 2 + 1; // odd rows
+        for col in 0..quarter_w {
+            let src_col = col * 4; // every 4th column, offset 0
+            let src_idx = src_row * w + src_col.min(w - 1);
+            let dst_idx = row * half_w + col;
+            u_out[dst_idx] = if src_idx < u444.len() { u444[src_idx] } else { 128 };
+            u_out[dst_idx + quarter_w] = if src_idx < v444.len() { v444[src_idx] } else { 128 };
         }
     }
 
-    // "V" plane: odd-row, even-column V values (quarter resolution)
-    for row in 0..(h / 2) {
-        for col in 0..(w / 2) {
-            let src_row = row * 2 + 1;
-            let src_col = col * 2;
-            let src_idx = src_row * w + src_col;
-            v_out[row * (w / 2) + col] = if src_idx < v444.len() { v444[src_idx] } else { 128 };
+    // V plane: left = U444[4k+2, odd_y], right = V444[4k+2, odd_y]
+    for row in 0..half_h {
+        let src_row = row * 2 + 1;
+        for col in 0..quarter_w {
+            let src_col = col * 4 + 2; // every 4th column, offset 2
+            let src_idx = src_row * w + src_col.min(w - 1);
+            let dst_idx = row * half_w + col;
+            v_out[dst_idx] = if src_idx < u444.len() { u444[src_idx] } else { 128 };
+            v_out[dst_idx + quarter_w] = if src_idx < v444.len() { v444[src_idx] } else { 128 };
         }
     }
 }
