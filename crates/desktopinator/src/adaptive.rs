@@ -101,6 +101,7 @@ impl TileGrid {
 
     /// Mark tiles that intersect any of the damage rectangles as dirty.
     pub fn mark_damage(&mut self, damage_rects: &[Rectangle<i32, Physical>]) {
+        let mut marked = 0u32;
         for tile in &mut self.tiles {
             for rect in damage_rects {
                 if rects_overlap(
@@ -114,9 +115,18 @@ impl TileGrid {
                     rect.size.h,
                 ) {
                     tile.dirty = true;
+                    marked += 1;
                     break;
                 }
             }
+        }
+        if marked > 0 || !damage_rects.is_empty() {
+            tracing::debug!(
+                damage_rects = damage_rects.len(),
+                marked,
+                total_tiles = self.tiles.len(),
+                "mark_damage"
+            );
         }
     }
 
