@@ -2275,6 +2275,8 @@ fn run_headless(
 
                         if use_adaptive {
                             // --- Adaptive tile path ---
+                            // Use tile grid for damage-aware encoding, but send
+                            // each tile as its own full GFX frame for compatibility
                             let grid = tile_grids.entry(d.name.clone()).or_insert_with(|| {
                                 adaptive::TileGrid::new(
                                     d.name.clone(),
@@ -2303,12 +2305,13 @@ fn run_headless(
                                         frame_id,
                                         tiles = tile_frames.len(),
                                         total_bytes,
-                                        "GFX: adaptive tile encode"
+                                        "GFX: adaptive tile batch"
                                     );
                                 }
 
+                                // Batch all tiles into one StartFrame/EndFrame
                                 match gfx::encode_gfx_avc420_tiles(&tile_frames, surface_id, frame_id) {
-                                    Ok(gfx_data) => {
+                                    Ok(gfx_data) if !gfx_data.is_empty() => {
                                         let channel_id = gfx_state_render.lock().unwrap().channel_id;
                                         if let Some(channel_id) = channel_id {
                                             if let Some(ref tx) = *rdp_event_tx_render.lock().unwrap() {
@@ -2316,12 +2319,16 @@ fn run_headless(
                                                     channel_id,
                                                     data: gfx_data,
                                                 });
+                                                if tile_frames.iter().any(|t| t.is_keyframe) {
+                                                    last_keyframe_time = std::time::Instant::now();
+                                                }
                                             }
                                         }
                                         gfx_state_render.lock().unwrap().next_frame_id = frame_id + 1;
                                     }
+                                    Ok(_) => {}
                                     Err(e) => {
-                                        tracing::warn!(output = %d.name, error = %e, "GFX tile encode failed");
+                                        tracing::warn!(output = %d.name, error = %e, "GFX tile batch failed");
                                     }
                                 }
                             }

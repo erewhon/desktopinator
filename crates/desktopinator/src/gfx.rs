@@ -604,6 +604,19 @@ pub fn encode_gfx_avc420_frame(
     height: u16,
     frame_id: u32,
 ) -> anyhow::Result<Vec<u8>> {
+    encode_gfx_avc420_frame_at(h264_data, surface_id, 0, 0, width, height, frame_id)
+}
+
+/// Encode a single H.264 frame as a GFX PDU, placed at (dest_x, dest_y) on the surface.
+pub fn encode_gfx_avc420_frame_at(
+    h264_data: &[u8],
+    surface_id: u16,
+    dest_x: u16,
+    dest_y: u16,
+    width: u16,
+    height: u16,
+    frame_id: u32,
+) -> anyhow::Result<Vec<u8>> {
     // StartFrame
     let start_frame = gfx::ServerPdu::StartFrame(StartFramePdu {
         timestamp: Timestamp {
@@ -615,7 +628,7 @@ pub fn encode_gfx_avc420_frame(
         frame_id,
     });
 
-    // Build AVC420 bitmap stream
+    // Build AVC420 bitmap stream — rectangles are relative to the H.264 frame
     let avc_stream = Avc420BitmapStream {
         rectangles: vec![InclusiveRectangle {
             left: 0,
@@ -635,15 +648,16 @@ pub fn encode_gfx_avc420_frame(
     let avc_bytes = encode_vec(&avc_stream)
         .map_err(|e| anyhow::anyhow!("failed to encode AVC420 stream: {e}"))?;
 
+    // destination_rectangle is where on the surface this frame goes
     let wire_to_surface = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
         surface_id,
         codec_id: Codec1Type::Avc420,
         pixel_format: PixelFormat::XRgb,
         destination_rectangle: InclusiveRectangle {
-            left: 0,
-            top: 0,
-            right: width.saturating_sub(1),
-            bottom: height.saturating_sub(1),
+            left: dest_x,
+            top: dest_y,
+            right: (dest_x + width).saturating_sub(1),
+            bottom: (dest_y + height).saturating_sub(1),
         },
         bitmap_data: avc_bytes,
     });

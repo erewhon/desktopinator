@@ -62,18 +62,19 @@ impl TileGrid {
                     base_h
                 };
 
-                // Round up to even dimensions for H.264
-                let ew = (w + 1) & !1;
-                let eh = (h + 1) & !1;
+                // H.264 requires even dimensions — clamp to not exceed output
+                let ew = ((w + 1) & !1).min(output_width - x);
+                let eh = ((h + 1) & !1).min(output_height - y);
 
-                let encoder = create_tile_encoder(ew as u32, eh as u32, encoder_pref)
+                let mut encoder = create_tile_encoder(ew as u32, eh as u32, encoder_pref)
                     .map_err(|e| anyhow::anyhow!("tile ({col},{row}) encoder: {e}"))?;
+                encoder.force_keyframe(); // ensure first encode produces IDR
 
                 tiles.push(Tile {
                     x,
                     y,
-                    width: w,
-                    height: h,
+                    width: ew,
+                    height: eh,
                     encoder,
                     dirty: true, // first frame is always dirty
                     frames_since_keyframe: 0,
