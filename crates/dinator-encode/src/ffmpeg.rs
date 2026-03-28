@@ -25,6 +25,7 @@ pub struct FfmpegEncoder {
     force_kf: bool,
     encoder_name: String,
     bitrate_bps: u32,
+    is_vaapi: bool,
 }
 
 // The ffmpeg types contain raw pointers that aren't Send, but we only
@@ -64,6 +65,7 @@ impl FfmpegEncoder {
                         force_kf: false,
                         encoder_name: name.to_string(),
                         bitrate_bps,
+                        is_vaapi: *name == "h264_vaapi",
                     });
                 }
                 Err(e) => {
@@ -111,51 +113,92 @@ fn try_create_encoder(
     encoder_ctx.set_gop(i32::MAX as u32);
     encoder_ctx.set_max_b_frames(0); // low latency
 
-    // Set pixel format based on encoder
-    let target_format = if name == "h264_vaapi" {
-        Pixel::NV12
-    } else {
-        Pixel::YUV420P
-    };
-    encoder_ctx.set_format(target_format);
-
-    // Set encoder-specific options
+    // Set encoder-specific options and pixel format
     let mut opts = ffmpeg_next::Dictionary::new();
-    match name {
-        "libx264" => {
-            // "Capped CRF" mode: CRF 23 for good quality with smaller frames,
-            // VBV rate control caps frame sizes during complex scenes (animations).
-            // Higher CRF (23 vs 20) produces noticeably smaller P-frames during
-            // motion, reducing dropped frames and pixelation.
-            opts.set("crf", "23");
-            encoder_ctx.set_max_bit_rate(10_000_000); // 10Mbps max burst
-            // VBV buffer size controls max single-frame burst.
-            // 4Mbits = 500KB max frame, matches MAX_GFX_FRAME_BYTES.
-            unsafe {
-                (*encoder_ctx.as_mut_ptr()).rc_buffer_size = 4_000_000;
+    let target_format;
+
+    if name == "h264_vaapi" {
+        // VAAPI: set up hardware device + frames context
+        target_format = Pixel::NV12; // scaler target; frames get uploaded to VAAPI surfaces
+
+        unsafe {
+            use ffmpeg_next::ffi;
+            use std::ptr;
+
+            // Create VAAPI hardware device context
+            let mut hw_device_ctx: *mut ffi::AVBufferRef = ptr::null_mut();
+            let ret = ffi::av_hwdevice_ctx_create(
+                &mut hw_device_ctx,
+                ffi::AVHWDeviceType::AV_HWDEVICE_TYPE_VAAPI,
+                ptr::null(), // default device (/dev/dri/renderD128)
+                ptr::null_mut(),
+                0,
+            );
+            if ret < 0 || hw_device_ctx.is_null() {
+                anyhow::bail!("failed to create VAAPI device context (error {ret})");
             }
-            opts.set("preset", "ultrafast");
-            opts.set("tune", "zerolatency");
-            opts.set("forced-idr", "1"); // force_keyframe() produces IDR (not just I-frame)
+
+            // Create hardware frames context
+            let mut hw_frames_ref = ffi::av_hwframe_ctx_alloc(hw_device_ctx);
+            if hw_frames_ref.is_null() {
+                ffi::av_buffer_unref(&mut hw_device_ctx);
+                anyhow::bail!("failed to allocate VAAPI frames context");
+            }
+
+            let frames_ctx = (*hw_frames_ref).data as *mut ffi::AVHWFramesContext;
+            (*frames_ctx).format = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
+            (*frames_ctx).sw_format = ffi::AVPixelFormat::AV_PIX_FMT_NV12;
+            (*frames_ctx).width = enc_width as i32;
+            (*frames_ctx).height = enc_height as i32;
+            (*frames_ctx).initial_pool_size = 4;
+
+            let ret = ffi::av_hwframe_ctx_init(hw_frames_ref);
+            if ret < 0 {
+                ffi::av_buffer_unref(&mut hw_frames_ref as *mut *mut ffi::AVBufferRef);
+                ffi::av_buffer_unref(&mut hw_device_ctx);
+                anyhow::bail!("failed to init VAAPI frames context (error {ret})");
+            }
+
+            // Set encoder to use VAAPI pixel format and hw_frames_ctx
+            (*encoder_ctx.as_mut_ptr()).pix_fmt = ffi::AVPixelFormat::AV_PIX_FMT_VAAPI;
+            (*encoder_ctx.as_mut_ptr()).hw_frames_ctx = ffi::av_buffer_ref(hw_frames_ref);
+
+            ffi::av_buffer_unref(&mut hw_frames_ref as *mut *mut ffi::AVBufferRef);
+            // hw_device_ctx is now owned by hw_frames_ctx
         }
-        "h264_nvenc" => {
-            encoder_ctx.set_bit_rate(bitrate_bps as usize);
-            opts.set("preset", "p1"); // fastest
-            opts.set("tune", "ull"); // ultra low latency
-            opts.set("zerolatency", "1");
-        }
-        "h264_vaapi" => {
-            encoder_ctx.set_bit_rate(bitrate_bps as usize);
-            opts.set("low_power", "1");
-        }
-        _ => {
-            encoder_ctx.set_bit_rate(bitrate_bps as usize);
+
+        encoder_ctx.set_bit_rate(bitrate_bps as usize);
+        opts.set("low_power", "1");
+    } else {
+        target_format = Pixel::YUV420P;
+        encoder_ctx.set_format(target_format);
+
+        match name {
+            "libx264" => {
+                opts.set("crf", "23");
+                encoder_ctx.set_max_bit_rate(10_000_000);
+                unsafe {
+                    (*encoder_ctx.as_mut_ptr()).rc_buffer_size = 4_000_000;
+                }
+                opts.set("preset", "ultrafast");
+                opts.set("tune", "zerolatency");
+                opts.set("forced-idr", "1");
+            }
+            "h264_nvenc" => {
+                encoder_ctx.set_bit_rate(bitrate_bps as usize);
+                opts.set("preset", "p1");
+                opts.set("tune", "ull");
+                opts.set("zerolatency", "1");
+            }
+            _ => {
+                encoder_ctx.set_bit_rate(bitrate_bps as usize);
+            }
         }
     }
 
     let encoder = encoder_ctx.open_with(opts)?;
 
-    // Create scaler: BGRA (original size) → target pixel format (even size for encoder)
+    // Create scaler: BGRA (original size) → NV12/YUV420P (even size for encoder)
     let converter = ffmpeg_next::software::scaling::Context::get(
         Pixel::BGRA,
         width,
@@ -196,20 +239,48 @@ impl crate::Encoder for FfmpegEncoder {
             data[dst_start..dst_start + len].copy_from_slice(&bgra[src_start..src_start + len]);
         }
 
-        // Convert to encoder's pixel format
+        // Convert to encoder's pixel format (NV12 for VAAPI, YUV420P for software)
         let mut yuv_frame = ffmpeg_next::frame::Video::empty();
         self.converter.run(&input_frame, &mut yuv_frame)?;
 
-        yuv_frame.set_pts(Some(self.frame_index));
+        // For VAAPI: upload NV12 frame to a GPU surface
+        let send_frame = if self.is_vaapi {
+            unsafe {
+                use ffmpeg_next::ffi;
+                let hw_frames_ctx = (*self.encoder.as_ptr()).hw_frames_ctx;
+                if hw_frames_ctx.is_null() {
+                    anyhow::bail!("VAAPI encoder has no hw_frames_ctx");
+                }
+                // Allocate a hardware frame
+                let mut hw_frame = ffmpeg_next::frame::Video::empty();
+                let ret = ffi::av_hwframe_get_buffer(hw_frames_ctx, hw_frame.as_mut_ptr(), 0);
+                if ret < 0 {
+                    anyhow::bail!("av_hwframe_get_buffer failed: {ret}");
+                }
+                // Upload NV12 → VAAPI surface
+                let ret = ffi::av_hwframe_transfer_data(hw_frame.as_mut_ptr(), yuv_frame.as_ptr(), 0);
+                if ret < 0 {
+                    anyhow::bail!("av_hwframe_transfer_data failed: {ret}");
+                }
+                hw_frame.set_pts(Some(self.frame_index));
+                if self.force_kf {
+                    self.force_kf = false;
+                    hw_frame.set_kind(ffmpeg_next::picture::Type::I);
+                }
+                hw_frame
+            }
+        } else {
+            yuv_frame.set_pts(Some(self.frame_index));
+            if self.force_kf {
+                self.force_kf = false;
+                yuv_frame.set_kind(ffmpeg_next::picture::Type::I);
+            }
+            yuv_frame
+        };
         self.frame_index += 1;
 
-        if self.force_kf {
-            self.force_kf = false;
-            yuv_frame.set_kind(ffmpeg_next::picture::Type::I);
-        }
-
         // Send frame to encoder
-        self.encoder.send_frame(&yuv_frame)?;
+        self.encoder.send_frame(&send_frame)?;
 
         // Receive encoded packet
         let mut packet = ffmpeg_next::Packet::empty();
