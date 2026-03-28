@@ -228,6 +228,93 @@ impl crate::Encoder for FfmpegEncoder {
         }
     }
 
+    fn encode_i420(
+        &mut self,
+        i420: &[u8],
+        width: u32,
+        height: u32,
+    ) -> anyhow::Result<Option<EncodedFrame>> {
+        use ffmpeg_next::format::Pixel;
+
+        if width != self.width || height != self.height {
+            self.resize(width, height)?;
+        }
+
+        let enc_width = self.encoder.width();
+        let enc_height = self.encoder.height();
+
+        // Create YUV420P frame directly — no color conversion needed
+        let mut yuv_frame = ffmpeg_next::frame::Video::new(Pixel::YUV420P, enc_width, enc_height);
+
+        let w = width as usize;
+        let h = height as usize;
+        let y_size = w * h;
+        let uv_size = (w / 2) * (h / 2);
+
+        // Copy Y plane
+        let y_stride = yuv_frame.stride(0);
+        let y_data = yuv_frame.data_mut(0);
+        for row in 0..h.min(enc_height as usize) {
+            let src = row * w;
+            let dst = row * y_stride;
+            let len = w.min(y_stride);
+            if src + len <= i420.len() {
+                y_data[dst..dst + len].copy_from_slice(&i420[src..src + len]);
+            }
+        }
+
+        // Copy U plane
+        let u_stride = yuv_frame.stride(1);
+        let u_data = yuv_frame.data_mut(1);
+        let uh = h / 2;
+        let uw = w / 2;
+        for row in 0..uh.min(enc_height as usize / 2) {
+            let src = y_size + row * uw;
+            let dst = row * u_stride;
+            let len = uw.min(u_stride);
+            if src + len <= i420.len() {
+                u_data[dst..dst + len].copy_from_slice(&i420[src..src + len]);
+            }
+        }
+
+        // Copy V plane
+        let v_stride = yuv_frame.stride(2);
+        let v_data = yuv_frame.data_mut(2);
+        for row in 0..uh.min(enc_height as usize / 2) {
+            let src = y_size + uv_size + row * uw;
+            let dst = row * v_stride;
+            let len = uw.min(v_stride);
+            if src + len <= i420.len() {
+                v_data[dst..dst + len].copy_from_slice(&i420[src..src + len]);
+            }
+        }
+
+        yuv_frame.set_pts(Some(self.frame_index));
+        self.frame_index += 1;
+
+        if self.force_kf {
+            self.force_kf = false;
+            yuv_frame.set_kind(ffmpeg_next::picture::Type::I);
+        }
+
+        self.encoder.send_frame(&yuv_frame)?;
+
+        let mut packet = ffmpeg_next::Packet::empty();
+        match self.encoder.receive_packet(&mut packet) {
+            Ok(()) => {
+                let data = packet.data().unwrap_or(&[]).to_vec();
+                let is_keyframe = packet.is_key();
+                Ok(Some(EncodedFrame { data, is_keyframe }))
+            }
+            Err(ffmpeg_next::Error::Other { errno })
+                if errno == ffmpeg_next::util::error::EAGAIN =>
+            {
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     fn force_keyframe(&mut self) {
         self.force_kf = true;
     }

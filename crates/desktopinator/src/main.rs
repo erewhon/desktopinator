@@ -1050,7 +1050,9 @@ fn run_headless(
         }
     }
 
-    state.seat.add_keyboard(Default::default(), 200, 25)?;
+    // Disable compositor-side key repeat for headless mode — the RDP/VNC
+    // client handles its own key repeat. Using delay=0, rate=0 disables it.
+    state.seat.add_keyboard(Default::default(), 0, 0)?;
     state.seat.add_pointer();
 
     // Accept new Wayland clients
@@ -1900,6 +1902,13 @@ fn run_headless(
     let mut gfx_frames_dropped: u64 = 0;
     let mut last_keyframe_time = std::time::Instant::now();
     let keyframe_cooldown = Duration::from_secs(2);
+    // Second encoder for AVC444 chroma stream (per output)
+    let mut chroma_encoders: HashMap<String, Box<dyn dinator_encode::Encoder>> = HashMap::new();
+    // Reusable buffers for AVC444 YUV444 conversion
+    let mut yuv444_y: Vec<u8> = Vec::new();
+    let mut yuv444_u: Vec<u8> = Vec::new();
+    let mut yuv444_v: Vec<u8> = Vec::new();
+    let mut chroma_yuv420: Vec<u8> = Vec::new();
     if use_adaptive {
         info!(tile_cols, tile_rows, "adaptive tile encoding enabled");
     }
@@ -2131,6 +2140,9 @@ fn run_headless(
                         for enc in h264_encoders.values_mut() {
                             enc.force_keyframe();
                         }
+                        for enc in chroma_encoders.values_mut() {
+                            enc.force_keyframe();
+                        }
                         for grid in tile_grids.values_mut() {
                             grid.force_all_keyframes();
                         }
@@ -2228,6 +2240,9 @@ fn run_headless(
                             grid.force_all_keyframes();
                         }
                         for enc in h264_encoders.values_mut() {
+                            enc.force_keyframe();
+                        }
+                        for enc in chroma_encoders.values_mut() {
                             enc.force_keyframe();
                         }
                         info!("GFX: forced H.264 keyframes on {} encoders", h264_encoders.len());
@@ -2376,11 +2391,13 @@ fn run_headless(
                                         drop(gfx_lock);
 
                                         let gfx_result = if use_avc444 {
-                                            // AVC444 luma-only (LC=1): same H.264 data,
-                                            // but codec ID tells client to expect 444 stream
+                                            // AVC444 luma-only (LC=1) — chroma stream
+                                            // packing (B4-B7) needs more work to match
+                                            // the exact MS-RDPEGFX spec. LC=1 sends our
+                                            // existing YUV420 H.264 with AVC444 codec ID.
                                             gfx::encode_gfx_avc444_frame(
                                                 &encoded.data,
-                                                None, // no chroma stream yet (LC=1)
+                                                None,
                                                 surface_id,
                                                 d.width,
                                                 d.height,
