@@ -816,38 +816,48 @@ pub fn encode_gfx_avc444_frame(
         quality: 100,
     };
 
+    // Manually construct the AVC444 wire format to ensure correctness.
+    // Format: [4-byte header][RFX_AVC420_BITMAP_STREAM 1][RFX_AVC420_BITMAP_STREAM 2]
+    // Header bits [29:0] = cbAvc420EncodedBitstream1, bits [31:30] = LC
     let stream1 = Avc420BitmapStream {
         rectangles: vec![mk_rect()],
         quant_qual_vals: vec![mk_qq()],
         data: luma_h264,
     };
+    let stream1_bytes = encode_vec(&stream1)
+        .map_err(|e| anyhow::anyhow!("failed to encode AVC420 stream1: {e}"))?;
 
-    let (encoding, stream2) = if let Some(chroma_data) = chroma_h264 {
-        let s2 = Avc420BitmapStream {
+    let avc_bytes = if let Some(chroma_data) = chroma_h264 {
+        let stream2 = Avc420BitmapStream {
             rectangles: vec![mk_rect()],
             quant_qual_vals: vec![mk_qq()],
             data: chroma_data,
         };
-        (Encoding::LUMA_AND_CHROMA, Some(s2))
+        let stream2_bytes = encode_vec(&stream2)
+            .map_err(|e| anyhow::anyhow!("failed to encode AVC420 stream2: {e}"))?;
+
+        // LC=0 (LUMA_AND_CHROMA): both streams present
+        let lc: u32 = 0;
+        let header: u32 = (stream1_bytes.len() as u32 & 0x3FFFFFFF) | (lc << 30);
+
+        let mut buf = Vec::with_capacity(4 + stream1_bytes.len() + stream2_bytes.len());
+        buf.extend_from_slice(&header.to_le_bytes());
+        buf.extend_from_slice(&stream1_bytes);
+        buf.extend_from_slice(&stream2_bytes);
+        buf
     } else {
-        (Encoding::LUMA, None)
+        // LC=1 (LUMA only): just stream1
+        let lc: u32 = 1;
+        let header: u32 = (stream1_bytes.len() as u32 & 0x3FFFFFFF) | (lc << 30);
+
+        let mut buf = Vec::with_capacity(4 + stream1_bytes.len());
+        buf.extend_from_slice(&header.to_le_bytes());
+        buf.extend_from_slice(&stream1_bytes);
+        buf
     };
 
-    let avc444 = Avc444BitmapStream {
-        encoding,
-        stream1,
-        stream2,
-    };
-
-    let avc_bytes = encode_vec(&avc444)
-        .map_err(|e| anyhow::anyhow!("failed to encode AVC444 stream: {e}"))?;
-
-    // Use AVC444v2 (0x000F) for simpler chroma packing, or AVC444 (0x000E) for LC=1
-    let codec_id = if chroma_h264.is_some() {
-        Codec1Type::Avc444v2
-    } else {
-        Codec1Type::Avc444
-    };
+    // Always use AVC444 (0x000E) — AVC444v2 (0x000F) may not be supported by all clients
+    let codec_id = Codec1Type::Avc444;
 
     let wire_to_surface = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
         surface_id,

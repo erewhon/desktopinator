@@ -2391,10 +2391,13 @@ fn run_headless(
                                         drop(gfx_lock);
 
                                         let gfx_result = if use_avc444 {
-                                            // AVC444 luma-only (LC=1) for now.
-                                            // Two-pass dual-stream produces black screen —
-                                            // likely a chroma packing or wire format issue
-                                            // that needs packet-level debugging with Wireshark.
+                                            // AVC444 luma-only (LC=1).
+                                            // Dual-stream (LC=0) causes black screen on Windows
+                                            // App regardless of wire format — the client may
+                                            // only support alternating LC=1/LC=2 frames, not
+                                            // combined LC=0. Further investigation needed with
+                                            // Wireshark capture of a working FreeRDP AVC444
+                                            // session.
                                             gfx::encode_gfx_avc444_frame(
                                                 &encoded.data,
                                                 None,
