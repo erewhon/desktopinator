@@ -143,6 +143,54 @@ pub fn bgra_to_yuv444(bgra: &[u8], width: u32, height: u32, y444: &mut [u8], u44
     }
 }
 
+/// Downsample full-resolution YUV444 planes to I420 (YUV420 planar).
+/// This is stream 1 of AVC444 — standard 4:2:0 subsample with 2x2 averaging.
+/// `i420` must be at least width*height*3/2 bytes.
+pub fn yuv444_to_i420(
+    y444: &[u8],
+    u444: &[u8],
+    v444: &[u8],
+    width: u32,
+    height: u32,
+    i420: &mut [u8],
+) {
+    let w = width as usize;
+    let h = height as usize;
+    let y_size = w * h;
+    let uv_size = (w / 2) * (h / 2);
+
+    let (y_out, rest) = i420.split_at_mut(y_size);
+    let (u_out, v_out) = rest.split_at_mut(uv_size);
+
+    // Y plane: copy directly (full resolution)
+    y_out[..y_size.min(y444.len())].copy_from_slice(&y444[..y_size.min(y444.len())]);
+
+    // U and V planes: average 2x2 blocks
+    let half_w = w / 2;
+    for row in 0..(h / 2) {
+        for col in 0..half_w {
+            let r0 = row * 2;
+            let r1 = (r0 + 1).min(h - 1);
+            let c0 = col * 2;
+            let c1 = (c0 + 1).min(w - 1);
+
+            let u_avg = (u444[r0 * w + c0] as u16
+                + u444[r0 * w + c1] as u16
+                + u444[r1 * w + c0] as u16
+                + u444[r1 * w + c1] as u16)
+                / 4;
+            let v_avg = (v444[r0 * w + c0] as u16
+                + v444[r0 * w + c1] as u16
+                + v444[r1 * w + c0] as u16
+                + v444[r1 * w + c1] as u16)
+                / 4;
+
+            u_out[row * half_w + col] = u_avg as u8;
+            v_out[row * half_w + col] = v_avg as u8;
+        }
+    }
+}
+
 /// Convert BGRA pixels to I420 (YUV420 planar) in-place into the provided buffer.
 /// `yuv` must be at least width*height*3/2 bytes.
 pub(crate) fn bgra_to_i420(bgra: &[u8], width: u32, height: u32, yuv: &mut [u8]) {

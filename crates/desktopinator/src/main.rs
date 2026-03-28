@@ -2391,10 +2391,10 @@ fn run_headless(
                                         drop(gfx_lock);
 
                                         let gfx_result = if use_avc444 {
-                                            // AVC444 luma-only (LC=1) — dual-stream chroma
-                                            // requires shared encoder state between streams
-                                            // which isn't feasible with independent encoders.
-                                            // LC=1 still benefits from the AVC444 codec path.
+                                            // AVC444 luma-only (LC=1) for now.
+                                            // Two-pass dual-stream produces black screen —
+                                            // likely a chroma packing or wire format issue
+                                            // that needs packet-level debugging with Wireshark.
                                             gfx::encode_gfx_avc444_frame(
                                                 &encoded.data,
                                                 None,
