@@ -278,6 +278,78 @@ mod tests {
         assert!(frame.is_keyframe, "first frame should be a keyframe");
     }
 
+    #[test]
+    fn pack_avc444v2_chroma_4x4() {
+        // 4x4 test with distinct U444/V444 values at each pixel
+        let w = 4u32;
+        let h = 4u32;
+        let mut u444 = vec![0u8; 16];
+        let mut v444 = vec![0u8; 16];
+
+        // Fill with distinct values: U444[x,y] = 10*(y*4+x), V444[x,y] = 10*(y*4+x) + 1
+        for y in 0..4usize {
+            for x in 0..4usize {
+                u444[y * 4 + x] = (10 * (y * 4 + x)) as u8;
+                v444[y * 4 + x] = (10 * (y * 4 + x) + 1) as u8;
+            }
+        }
+        // U444:          V444:
+        //  0  10  20  30   1  11  21  31
+        // 40  50  60  70  41  51  61  71
+        // 80  90 100 110  81  91 101 111
+        //120 130 140 150 121 131 141 151
+
+        let mut chroma = vec![0u8; (w * h * 3 / 2) as usize]; // 24 bytes
+        pack_avc444v2_chroma(&u444, &v444, w, h, &mut chroma);
+
+        let y_plane = &chroma[0..16];   // 4x4
+        let u_plane = &chroma[16..20];  // 2x2
+        let v_plane = &chroma[20..24];  // 2x2
+
+        // === Stream2 Y plane ===
+        // Row 0: left half = U444[1,0], U444[3,0]; right half = V444[1,0], V444[3,0]
+        assert_eq!(y_plane[0], u444[1], "Y[0,0] = U444[1,0]");      // 10
+        assert_eq!(y_plane[1], u444[3], "Y[0,1] = U444[3,0]");      // 30
+        assert_eq!(y_plane[2], v444[1], "Y[0,2] = V444[1,0]");      // 11
+        assert_eq!(y_plane[3], v444[3], "Y[0,3] = V444[3,0]");      // 31
+
+        // Row 1: left = U444[1,1], U444[3,1]; right = V444[1,1], V444[3,1]
+        assert_eq!(y_plane[4], u444[4+1], "Y[1,0] = U444[1,1]");    // 50
+        assert_eq!(y_plane[5], u444[4+3], "Y[1,1] = U444[3,1]");    // 70
+        assert_eq!(y_plane[6], v444[4+1], "Y[1,2] = V444[1,1]");    // 51
+        assert_eq!(y_plane[7], v444[4+3], "Y[1,3] = V444[3,1]");    // 71
+
+        // Row 2: left = U444[1,2], U444[3,2]; right = V444[1,2], V444[3,2]
+        assert_eq!(y_plane[8], u444[8+1], "Y[2,0] = U444[1,2]");    // 90
+        assert_eq!(y_plane[9], u444[8+3], "Y[2,1] = U444[3,2]");    // 110
+        assert_eq!(y_plane[10], v444[8+1], "Y[2,2] = V444[1,2]");   // 91
+        assert_eq!(y_plane[11], v444[8+3], "Y[2,3] = V444[3,2]");   // 111
+
+        // Row 3: left = U444[1,3], U444[3,3]; right = V444[1,3], V444[3,3]
+        assert_eq!(y_plane[12], u444[12+1], "Y[3,0] = U444[1,3]");  // 130
+        assert_eq!(y_plane[13], u444[12+3], "Y[3,1] = U444[3,3]");  // 150
+        assert_eq!(y_plane[14], v444[12+1], "Y[3,2] = V444[1,3]");  // 131
+        assert_eq!(y_plane[15], v444[12+3], "Y[3,3] = V444[3,3]");  // 151
+
+        // === Stream2 U plane (2x2) ===
+        // B6/B7: U444[4k, odd_y] and V444[4k, odd_y] where k=0, odd_y=1,3
+        // Row 0: left = U444[0,1], right = V444[0,1]
+        assert_eq!(u_plane[0], u444[4], "U[0,0] = U444[0,1]");      // 40
+        assert_eq!(u_plane[1], v444[4], "U[0,1] = V444[0,1]");      // 41
+        // Row 1: left = U444[0,3], right = V444[0,3]
+        assert_eq!(u_plane[2], u444[12], "U[1,0] = U444[0,3]");     // 120
+        assert_eq!(u_plane[3], v444[12], "U[1,1] = V444[0,3]");     // 121
+
+        // === Stream2 V plane (2x2) ===
+        // B8/B9: U444[4k+2, odd_y] and V444[4k+2, odd_y] where k=0, odd_y=1,3
+        // Row 0: left = U444[2,1], right = V444[2,1]
+        assert_eq!(v_plane[0], u444[6], "V[0,0] = U444[2,1]");      // 60
+        assert_eq!(v_plane[1], v444[6], "V[0,1] = V444[2,1]");      // 61
+        // Row 1: left = U444[2,3], right = V444[2,3]
+        assert_eq!(v_plane[2], u444[14], "V[1,0] = U444[2,3]");     // 140
+        assert_eq!(v_plane[3], v444[14], "V[1,1] = V444[2,3]");     // 141
+    }
+
     #[cfg(feature = "ffmpeg")]
     #[test]
     fn ffmpeg_libx264_encode() {

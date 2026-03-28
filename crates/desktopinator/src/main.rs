@@ -2390,13 +2390,100 @@ fn run_headless(
                                         let use_avc444 = gfx_lock.avc444_supported;
                                         drop(gfx_lock);
 
-                                        let gfx_result = if use_avc444 {
-                                            // AVC444 LC=1 (luma-only). Wire format confirmed
-                                            // working for LC=0 with empty stream2. Dual-stream
-                                            // causes black because the chroma data fed to the
-                                            // shared decoder corrupts reference frames. Need to
-                                            // verify the v2 chroma packing produces data the
-                                            // decoder can handle without corruption.
+                                        // AVC444 dual-stream disabled — see below
+                                        let avc444_dual_stream = false;
+                                        let gfx_result = if use_avc444 && avc444_dual_stream {
+                                            // AVC444v2 with SEPARATE chroma encoder
+                                            // (not shared — shared encoder corrupts reference chain)
+                                            let w = d.width as u32;
+                                            let h = d.height as u32;
+                                            let px_count = (w * h) as usize;
+                                            let i420_size = px_count * 3 / 2;
+
+                                            yuv444_y.resize(px_count, 0);
+                                            yuv444_u.resize(px_count, 0);
+                                            yuv444_v.resize(px_count, 0);
+                                            chroma_yuv420.resize(i420_size, 0);
+
+                                            dinator_encode::bgra_to_yuv444(
+                                                &bgra, w, h,
+                                                &mut yuv444_y, &mut yuv444_u, &mut yuv444_v,
+                                            );
+                                            dinator_encode::pack_avc444v2_chroma(
+                                                &yuv444_u, &yuv444_v, w, h,
+                                                &mut chroma_yuv420,
+                                            );
+
+                                            // Use SEPARATE encoder for chroma stream
+                                            let chroma_enc = chroma_encoders
+                                                .entry(d.name.clone())
+                                                .or_insert_with(|| {
+                                                    create_encoder(w, h, &encoder_pref_owned)
+                                                        .expect("chroma encoder")
+                                                });
+                                            if encoded.is_keyframe {
+                                                chroma_enc.force_keyframe();
+                                            }
+                                            let chroma_h264 = chroma_enc
+                                                .encode_i420(&chroma_yuv420, w, h)
+                                                .ok()
+                                                .flatten();
+
+                                            // Build stream1 (luma)
+                                            let stream1 = {
+                                                use ironrdp_pdu::rdp::vc::dvc::gfx::Avc420BitmapStream;
+                                                let s = Avc420BitmapStream {
+                                                    rectangles: vec![ironrdp_pdu::geometry::InclusiveRectangle {
+                                                        left: 0, top: 0,
+                                                        right: d.width.saturating_sub(1),
+                                                        bottom: d.height.saturating_sub(1),
+                                                    }],
+                                                    quant_qual_vals: vec![ironrdp_pdu::rdp::vc::dvc::gfx::QuantQuality {
+                                                        quantization_parameter: 22,
+                                                        progressive: false,
+                                                        quality: 100,
+                                                    }],
+                                                    data: &encoded.data,
+                                                };
+                                                ironrdp_core::encode_vec(&s).unwrap()
+                                            };
+
+                                            // Build stream2 (chroma) with full region rects
+                                            let stream2 = if let Some(ref s2) = chroma_h264 {
+                                                use ironrdp_pdu::rdp::vc::dvc::gfx::Avc420BitmapStream;
+                                                let s = Avc420BitmapStream {
+                                                    rectangles: vec![ironrdp_pdu::geometry::InclusiveRectangle {
+                                                        left: 0, top: 0,
+                                                        right: d.width.saturating_sub(1),
+                                                        bottom: d.height.saturating_sub(1),
+                                                    }],
+                                                    quant_qual_vals: vec![ironrdp_pdu::rdp::vc::dvc::gfx::QuantQuality {
+                                                        quantization_parameter: 22,
+                                                        progressive: false,
+                                                        quality: 100,
+                                                    }],
+                                                    data: &s2.data,
+                                                };
+                                                ironrdp_core::encode_vec(&s).unwrap()
+                                            } else {
+                                                vec![0u8; 4]
+                                            };
+
+                                            let header: u32 = stream1.len() as u32 & 0x3FFFFFFF;
+                                            let mut payload = Vec::with_capacity(4 + stream1.len() + stream2.len());
+                                            payload.extend_from_slice(&header.to_le_bytes());
+                                            payload.extend_from_slice(&stream1);
+                                            payload.extend_from_slice(&stream2);
+
+                                            gfx::encode_gfx_avc444_raw(
+                                                &payload,
+                                                surface_id,
+                                                d.width,
+                                                d.height,
+                                                frame_id,
+                                            )
+                                        } else if use_avc444 {
+                                            // AVC444 LC=1 (luma-only) — dual-stream disabled
                                             gfx::encode_gfx_avc444_frame(
                                                 &encoded.data,
                                                 None,
