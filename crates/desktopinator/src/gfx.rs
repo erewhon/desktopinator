@@ -840,6 +840,16 @@ pub fn encode_gfx_avc444_frame(
         let lc: u32 = 0;
         let header: u32 = (stream1_bytes.len() as u32 & 0x3FFFFFFF) | (lc << 30);
 
+        info!(
+            lc = 0,
+            header_hex = format!("{:08x}", header),
+            stream1_size = stream1_bytes.len(),
+            stream2_size = stream2_bytes.len(),
+            stream1_first16 = format!("{:02x?}", &stream1_bytes[..16.min(stream1_bytes.len())]),
+            stream2_first16 = format!("{:02x?}", &stream2_bytes[..16.min(stream2_bytes.len())]),
+            "AVC444 LC=0 payload"
+        );
+
         let mut buf = Vec::with_capacity(4 + stream1_bytes.len() + stream2_bytes.len());
         buf.extend_from_slice(&header.to_le_bytes());
         buf.extend_from_slice(&stream1_bytes);
@@ -870,6 +880,44 @@ pub fn encode_gfx_avc444_frame(
             bottom: height.saturating_sub(1),
         },
         bitmap_data: avc_bytes,
+    });
+
+    let end_frame = gfx::ServerPdu::EndFrame(EndFramePdu { frame_id });
+
+    let mut raw = Vec::new();
+    for pdu in [start_frame, wire_to_surface, end_frame] {
+        let encoded =
+            encode_vec(&pdu).map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+        raw.extend_from_slice(&encoded);
+    }
+
+    Ok(wrap_zgfx_uncompressed(&raw))
+}
+
+/// Send raw pre-built AVC444 payload bytes in a WireToSurface1 PDU.
+pub fn encode_gfx_avc444_raw(
+    avc444_payload: &[u8],
+    surface_id: u16,
+    width: u16,
+    height: u16,
+    frame_id: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let start_frame = gfx::ServerPdu::StartFrame(StartFramePdu {
+        timestamp: Timestamp { milliseconds: 0, seconds: 0, minutes: 0, hours: 0 },
+        frame_id,
+    });
+
+    let wire_to_surface = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id,
+        codec_id: Codec1Type::Avc444,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: width.saturating_sub(1),
+            bottom: height.saturating_sub(1),
+        },
+        bitmap_data: avc444_payload.to_vec(),
     });
 
     let end_frame = gfx::ServerPdu::EndFrame(EndFramePdu { frame_id });

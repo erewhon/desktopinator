@@ -2391,13 +2391,12 @@ fn run_headless(
                                         drop(gfx_lock);
 
                                         let gfx_result = if use_avc444 {
-                                            // AVC444 luma-only (LC=1).
-                                            // Dual-stream (LC=0) causes black screen on Windows
-                                            // App regardless of wire format — the client may
-                                            // only support alternating LC=1/LC=2 frames, not
-                                            // combined LC=0. Further investigation needed with
-                                            // Wireshark capture of a working FreeRDP AVC444
-                                            // session.
+                                            // AVC444 LC=1 (luma-only). Wire format confirmed
+                                            // working for LC=0 with empty stream2. Dual-stream
+                                            // causes black because the chroma data fed to the
+                                            // shared decoder corrupts reference frames. Need to
+                                            // verify the v2 chroma packing produces data the
+                                            // decoder can handle without corruption.
                                             gfx::encode_gfx_avc444_frame(
                                                 &encoded.data,
                                                 None,
