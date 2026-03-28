@@ -2370,14 +2370,32 @@ fn run_headless(
                                         }
                                         gfx_state_render.lock().unwrap().next_frame_id += 1;
                                     } else {
-                                        let frame_id = gfx_state_render.lock().unwrap().next_frame_id;
-                                        match gfx::encode_gfx_avc420_frame(
-                                            &encoded.data,
-                                            surface_id,
-                                            d.width,
-                                            d.height,
-                                            frame_id,
-                                        ) {
+                                        let gfx_lock = gfx_state_render.lock().unwrap();
+                                        let frame_id = gfx_lock.next_frame_id;
+                                        let use_avc444 = gfx_lock.avc444_supported;
+                                        drop(gfx_lock);
+
+                                        let gfx_result = if use_avc444 {
+                                            // AVC444 luma-only (LC=1): same H.264 data,
+                                            // but codec ID tells client to expect 444 stream
+                                            gfx::encode_gfx_avc444_frame(
+                                                &encoded.data,
+                                                None, // no chroma stream yet (LC=1)
+                                                surface_id,
+                                                d.width,
+                                                d.height,
+                                                frame_id,
+                                            )
+                                        } else {
+                                            gfx::encode_gfx_avc420_frame(
+                                                &encoded.data,
+                                                surface_id,
+                                                d.width,
+                                                d.height,
+                                                frame_id,
+                                            )
+                                        };
+                                        match gfx_result {
                                             Ok(gfx_data) => {
                                                 let channel_id = gfx_state_render.lock().unwrap().channel_id;
                                                 if let Some(channel_id) = channel_id {

@@ -10,9 +10,9 @@ use ironrdp_dvc::{DvcEncode, DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::rdp::vc::dvc::gfx::{
-    self, Avc420BitmapStream, CapabilitySet, Codec1Type, CreateSurfacePdu, EndFramePdu,
-    MapSurfaceToOutputPdu, PixelFormat, QuantQuality, ResetGraphicsPdu, StartFramePdu, Timestamp,
-    WireToSurface1Pdu,
+    self, Avc420BitmapStream, Avc444BitmapStream, CapabilitySet, Codec1Type, CreateSurfacePdu,
+    EndFramePdu, Encoding, MapSurfaceToOutputPdu, PixelFormat, QuantQuality, ResetGraphicsPdu,
+    StartFramePdu, Timestamp, WireToSurface1Pdu,
 };
 use ironrdp_pdu::PduResult;
 use tracing::{debug, info, warn};
@@ -68,6 +68,8 @@ pub struct GfxSharedState {
     pub ready: bool,
     /// Whether the client supports AVC420.
     pub avc_supported: bool,
+    /// Whether the client supports AVC444 (GFX cap V10.4+ without AVC_DISABLED).
+    pub avc444_supported: bool,
     /// Per-output surface info. Updated by the render loop when outputs change.
     pub outputs: Vec<GfxOutputInfo>,
     /// Composite dimensions (bounding box of all outputs).
@@ -87,6 +89,7 @@ impl GfxSharedState {
             channel_id: None,
             ready: false,
             avc_supported: false,
+            avc444_supported: false,
             outputs: vec![GfxOutputInfo {
                 name: String::new(),
                 surface_id: 0,
@@ -137,6 +140,7 @@ impl DvcProcessor for GfxHandler {
         state.channel_id = Some(channel_id);
         state.ready = false;
         state.avc_supported = false;
+        state.avc444_supported = false;
         state.next_frame_id = 0;
         state.last_acked_frame_id = None;
         state.pending_response = None;
@@ -216,8 +220,8 @@ impl GfxHandler {
 
         // Select the best capability set from what the client advertised.
         // Preference: V8.1 with AVC420 > V10.x > V8 > fallback to V8.1
-        let (selected_cap, avc_supported) = select_capability(&advertised);
-        info!(?selected_cap, avc_supported, "GFX: selected capability");
+        let (selected_cap, avc_supported, avc444_supported) = select_capability(&advertised);
+        info!(?selected_cap, avc_supported, avc444_supported, "GFX: selected capability");
 
         let state = self.state.lock().unwrap();
         let outputs = state.outputs.clone();
@@ -306,11 +310,13 @@ impl GfxHandler {
             data: deferred,
         });
         state.avc_supported = avc_supported;
+        state.avc444_supported = avc444_supported;
         info!(
             composite_w = composite_width,
             composite_h = composite_height,
             outputs = outputs.len(),
             avc_supported,
+            avc444_supported,
             "GFX: caps confirmed, multi-surface setup deferred"
         );
 
@@ -444,11 +450,11 @@ fn parse_capabilities_advertise(data: &[u8]) -> Vec<CapabilitySet> {
 }
 
 /// Select the best capability set from the client's advertised list.
-/// Returns (selected_cap, avc_supported).
+/// Returns (selected_cap, avc_supported, avc444_supported).
 ///
 /// Per FreeRDP's approach, prefer the HIGHEST version the client advertises.
 /// V10.4+ support AVC420/AVC444 implicitly (unless AVC_DISABLED flag is set).
-fn select_capability(advertised: &[CapabilitySet]) -> (CapabilitySet, bool) {
+fn select_capability(advertised: &[CapabilitySet]) -> (CapabilitySet, bool, bool) {
     // Assign a priority to each version (higher = better)
     fn version_priority(cap: &CapabilitySet) -> u32 {
         match cap {
@@ -493,14 +499,31 @@ fn select_capability(advertised: &[CapabilitySet]) -> (CapabilitySet, bool) {
     // Select the highest-priority capability
     let best = advertised.iter().max_by_key(|cap| version_priority(cap));
 
+    fn is_avc444_supported(cap: &CapabilitySet) -> bool {
+        // AVC444 requires V10.4+ with AVC enabled
+        match cap {
+            CapabilitySet::V10_4 { flags }
+            | CapabilitySet::V10_5 { flags }
+            | CapabilitySet::V10_6 { flags } => {
+                !flags.contains(gfx::CapabilitiesV104Flags::AVC_DISABLED)
+            }
+            CapabilitySet::V10_7 { flags } => {
+                !flags.contains(gfx::CapabilitiesV107Flags::AVC_DISABLED)
+            }
+            _ => false,
+        }
+    }
+
     if let Some(cap) = best {
         let avc = is_avc_supported(cap);
-        (cap.clone(), avc)
+        let avc444 = is_avc444_supported(cap);
+        (cap.clone(), avc, avc444)
     } else {
         (
             CapabilitySet::V8 {
                 flags: gfx::CapabilitiesV8Flags::empty(),
             },
+            false,
             false,
         )
     }
@@ -742,6 +765,104 @@ pub fn encode_gfx_avc420_tiles(
     let end_frame = gfx::ServerPdu::EndFrame(EndFramePdu { frame_id });
     let end_bytes = encode_vec(&end_frame).map_err(|e| anyhow::anyhow!("end frame: {e}"))?;
     raw.extend_from_slice(&end_bytes);
+
+    Ok(wrap_zgfx_uncompressed(&raw))
+}
+
+/// Encode a GFX frame using AVC444 codec (dual-stream or luma-only).
+///
+/// - `luma_h264`: H.264 NAL data for stream 1 (standard YUV420 encode)
+/// - `chroma_h264`: Optional H.264 NAL data for stream 2 (chroma residuals)
+///   If None, sends luma-only (LC=1).
+pub fn encode_gfx_avc444_frame(
+    luma_h264: &[u8],
+    chroma_h264: Option<&[u8]>,
+    surface_id: u16,
+    width: u16,
+    height: u16,
+    frame_id: u32,
+) -> anyhow::Result<Vec<u8>> {
+    let start_frame = gfx::ServerPdu::StartFrame(StartFramePdu {
+        timestamp: Timestamp {
+            milliseconds: 0,
+            seconds: 0,
+            minutes: 0,
+            hours: 0,
+        },
+        frame_id,
+    });
+
+    let rect = InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: width.saturating_sub(1),
+        bottom: height.saturating_sub(1),
+    };
+    let qq = QuantQuality {
+        quantization_parameter: 22,
+        progressive: false,
+        quality: 100,
+    };
+
+    let mk_rect = || InclusiveRectangle {
+        left: 0,
+        top: 0,
+        right: width.saturating_sub(1),
+        bottom: height.saturating_sub(1),
+    };
+    let mk_qq = || QuantQuality {
+        quantization_parameter: 22,
+        progressive: false,
+        quality: 100,
+    };
+
+    let stream1 = Avc420BitmapStream {
+        rectangles: vec![mk_rect()],
+        quant_qual_vals: vec![mk_qq()],
+        data: luma_h264,
+    };
+
+    let (encoding, stream2) = if let Some(chroma_data) = chroma_h264 {
+        let s2 = Avc420BitmapStream {
+            rectangles: vec![mk_rect()],
+            quant_qual_vals: vec![mk_qq()],
+            data: chroma_data,
+        };
+        (Encoding::LUMA_AND_CHROMA, Some(s2))
+    } else {
+        (Encoding::LUMA, None)
+    };
+
+    let avc444 = Avc444BitmapStream {
+        encoding,
+        stream1,
+        stream2,
+    };
+
+    let avc_bytes = encode_vec(&avc444)
+        .map_err(|e| anyhow::anyhow!("failed to encode AVC444 stream: {e}"))?;
+
+    let wire_to_surface = gfx::ServerPdu::WireToSurface1(WireToSurface1Pdu {
+        surface_id,
+        codec_id: Codec1Type::Avc444,
+        pixel_format: PixelFormat::XRgb,
+        destination_rectangle: InclusiveRectangle {
+            left: 0,
+            top: 0,
+            right: width.saturating_sub(1),
+            bottom: height.saturating_sub(1),
+        },
+        bitmap_data: avc_bytes,
+    });
+
+    let end_frame = gfx::ServerPdu::EndFrame(EndFramePdu { frame_id });
+
+    let mut raw = Vec::new();
+    for pdu in [start_frame, wire_to_surface, end_frame] {
+        let encoded =
+            encode_vec(&pdu).map_err(|e| anyhow::anyhow!("failed to encode GFX PDU: {e}"))?;
+        raw.extend_from_slice(&encoded);
+    }
 
     Ok(wrap_zgfx_uncompressed(&raw))
 }
