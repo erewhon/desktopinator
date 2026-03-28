@@ -1,6 +1,6 @@
 [package]
 name = "dinator-tiling"
-version = "2026.3.27"
+version = "2026.3.28"
 edition = "2021"
 
 [dependencies]
