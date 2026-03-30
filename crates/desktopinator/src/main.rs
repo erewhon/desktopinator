@@ -106,7 +106,7 @@ impl RenderElement<GlesRenderer> for OutputRenderElements {
 }
 
 /// Build the render element list: space elements + focus border.
-fn build_render_elements(
+pub(crate) fn build_render_elements(
     renderer: &mut GlesRenderer,
     state: &DinatorState,
     output: &Output,
@@ -2667,7 +2667,7 @@ fn cleanup_and_exit(code: i32) -> ! {
 }
 
 /// Get the clear color for render_output based on the background config.
-fn background_clear_color(bg: &dinator_core::Background) -> [f32; 4] {
+pub(crate) fn background_clear_color(bg: &dinator_core::Background) -> [f32; 4] {
     match bg {
         dinator_core::Background::Solid(c) => *c,
         // For gradients, use bottom color as clear (bands render on top)
