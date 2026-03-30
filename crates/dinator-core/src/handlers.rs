@@ -177,25 +177,34 @@ impl CompositorHandler for DinatorState {
 
                 // If the window committed a buffer that doesn't match its configured
                 // tiled size, force a re-configure to constrain it back.
+                // Also retile if the window has zero size (initial commit).
                 // (Skip for floating windows — they manage their own size)
                 if let Some(&id) = self.surface_to_id.get(surface) {
                     if !self.floating.contains(&id) {
-                        let target = compositor::with_states(toplevel.wl_surface(), |states| {
-                            let attrs = states
-                                .data_map
-                                .get::<XdgToplevelSurfaceData>()
-                                .unwrap()
-                                .lock()
-                                .unwrap();
-                            attrs.current_server_state().size
-                        });
                         let actual = window.geometry().size;
-                        if let Some(target) = target {
-                            if actual != target {
-                                toplevel.with_pending_state(|state| {
-                                    state.size = Some(target);
-                                });
-                                toplevel.send_configure();
+
+                        // Zero-size window on commit → retile to send proper configure
+                        if actual.w == 0 || actual.h == 0 {
+                            if let Some(output) = self.get_focused_output() {
+                                self.retile(&output);
+                            }
+                        } else {
+                            let target = compositor::with_states(toplevel.wl_surface(), |states| {
+                                let attrs = states
+                                    .data_map
+                                    .get::<XdgToplevelSurfaceData>()
+                                    .unwrap()
+                                    .lock()
+                                    .unwrap();
+                                attrs.current_server_state().size
+                            });
+                            if let Some(target) = target {
+                                if actual != target {
+                                    toplevel.with_pending_state(|state| {
+                                        state.size = Some(target);
+                                    });
+                                    toplevel.send_configure();
+                                }
                             }
                         }
                     }
