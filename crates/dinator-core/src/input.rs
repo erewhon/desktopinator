@@ -1,6 +1,6 @@
 use smithay::backend::input::{
     Axis, ButtonState, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
-    PointerButtonEvent, PointerMotionAbsoluteEvent,
+    PointerButtonEvent, PointerMotionAbsoluteEvent, PointerMotionEvent,
 };
 use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
 use smithay::input::keyboard::keysyms;
@@ -19,7 +19,17 @@ enum KeyAction {
     CloseWindow,
     FocusNext,
     FocusPrev,
+    FocusOutputLeft,
+    FocusOutputRight,
+    MoveToOutputLeft,
+    MoveToOutputRight,
     SwapMaster,
+    MasterGrow,
+    MasterShrink,
+    ToggleFullscreen,
+    ToggleFloat,
+    CycleLayoutForward,
+    CycleLayoutBackward,
     Quit,
     PluginCallback(String),
     SwitchWorkspace(usize),
@@ -30,6 +40,7 @@ impl DinatorState {
     pub fn handle_input_event<B: InputBackend>(&mut self, event: InputEvent<B>) {
         match event {
             InputEvent::Keyboard { event } => self.handle_keyboard(event),
+            InputEvent::PointerMotion { event } => self.handle_pointer_motion(event),
             InputEvent::PointerMotionAbsolute { event } => {
                 self.handle_pointer_motion_absolute(event)
             }
@@ -79,13 +90,15 @@ impl DinatorState {
                     }
 
                     match sym.raw() {
-                        keysyms::KEY_Return
-                        | keysyms::KEY_d
-                        | keysyms::KEY_j
-                        | keysyms::KEY_k
-                        | keysyms::KEY_q
-                        | keysyms::KEY_Q
-                        | keysyms::KEY_space => {
+                        keysyms::KEY_Return | keysyms::KEY_d
+                        | keysyms::KEY_j | keysyms::KEY_k
+                        | keysyms::KEY_q | keysyms::KEY_Q
+                        | keysyms::KEY_space
+                        | keysyms::KEY_h | keysyms::KEY_l
+                        | keysyms::KEY_f | keysyms::KEY_v
+                        | keysyms::KEY_m | keysyms::KEY_M
+                        | keysyms::KEY_comma | keysyms::KEY_period
+                        | keysyms::KEY_less | keysyms::KEY_greater => {
                             if press_state == KeyState::Pressed {
                                 let action = match sym.raw() {
                                     keysyms::KEY_Return => KeyAction::LaunchTerminal,
@@ -95,6 +108,16 @@ impl DinatorState {
                                     keysyms::KEY_j => KeyAction::FocusNext,
                                     keysyms::KEY_k => KeyAction::FocusPrev,
                                     keysyms::KEY_space => KeyAction::SwapMaster,
+                                    keysyms::KEY_h => KeyAction::MasterShrink,
+                                    keysyms::KEY_l => KeyAction::MasterGrow,
+                                    keysyms::KEY_f => KeyAction::ToggleFullscreen,
+                                    keysyms::KEY_v => KeyAction::ToggleFloat,
+                                    keysyms::KEY_m => KeyAction::CycleLayoutForward,
+                                    keysyms::KEY_M => KeyAction::CycleLayoutBackward,
+                                    keysyms::KEY_comma => KeyAction::FocusOutputLeft,
+                                    keysyms::KEY_period => KeyAction::FocusOutputRight,
+                                    keysyms::KEY_less => KeyAction::MoveToOutputLeft,
+                                    keysyms::KEY_greater => KeyAction::MoveToOutputRight,
                                     _ => unreachable!(),
                                 };
                                 return FilterResult::Intercept(Some(action));
@@ -148,7 +171,34 @@ impl DinatorState {
                 }
                 KeyAction::FocusNext => self.focus_next(),
                 KeyAction::FocusPrev => self.focus_prev(),
+                KeyAction::FocusOutputLeft => self.focus_output_direction(-1),
+                KeyAction::FocusOutputRight => self.focus_output_direction(1),
+                KeyAction::MoveToOutputLeft => { self.move_window_to_output_direction(-1); }
+                KeyAction::MoveToOutputRight => { self.move_window_to_output_direction(1); }
                 KeyAction::SwapMaster => self.swap_master(),
+                KeyAction::MasterGrow | KeyAction::MasterShrink => {
+                    let changed = if matches!(action, KeyAction::MasterGrow) {
+                        self.grow_master()
+                    } else {
+                        self.shrink_master()
+                    };
+                    if changed {
+                        if let Some(output) = self.get_focused_output() {
+                            self.retile(&output);
+                        }
+                    }
+                }
+                KeyAction::ToggleFullscreen => { self.toggle_fullscreen(); }
+                KeyAction::ToggleFloat => { self.toggle_float(); }
+                KeyAction::CycleLayoutForward | KeyAction::CycleLayoutBackward => {
+                    let dir = if matches!(action, KeyAction::CycleLayoutForward) { 1 } else { -1 };
+                    if let Some(name) = self.cycle_layout(dir) {
+                        if let Some(output) = self.get_focused_output() {
+                            self.retile(&output);
+                        }
+                        self.emit_event(dinator_ipc::IpcEvent::LayoutChanged { name });
+                    }
+                }
                 KeyAction::PluginCallback(ref callback_id) => {
                     info!(callback = %callback_id, "plugin keybinding");
                     if let Some(ref mut runtime) = self.plugin_runtime {
@@ -164,6 +214,97 @@ impl DinatorState {
                 }
             }
         }
+    }
+
+    fn handle_pointer_motion<B: InputBackend>(
+        &mut self,
+        event: impl PointerMotionEvent<B>,
+    ) {
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+
+        let current = pointer.current_location();
+        let delta = event.delta();
+
+        // Clamp to the bounding box of all outputs
+        let mut max_x: f64 = 0.0;
+        let mut max_y: f64 = 0.0;
+        for output in self.space.outputs() {
+            if let Some(geo) = self.space.output_geometry(output) {
+                max_x = max_x.max((geo.loc.x + geo.size.w) as f64);
+                max_y = max_y.max((geo.loc.y + geo.size.h) as f64);
+            }
+        }
+
+        let new_x = (current.x + delta.x).clamp(0.0, max_x - 1.0);
+        let new_y = (current.y + delta.y).clamp(0.0, max_y - 1.0);
+        let pos = (new_x, new_y);
+
+        let serial = SERIAL_COUNTER.next_serial();
+
+        // Check layer surfaces first
+        let output = self.space.outputs().find(|o| {
+            self.space.output_geometry(o).is_some_and(|geo| {
+                new_x >= geo.loc.x as f64
+                    && new_x < (geo.loc.x + geo.size.w) as f64
+                    && new_y >= geo.loc.y as f64
+                    && new_y < (geo.loc.y + geo.size.h) as f64
+            })
+        }).cloned();
+
+        let mut surface_under = None;
+        if let Some(ref output) = output {
+            let layer_map = layer_map_for_output(output);
+            for layer in [WlrLayer::Overlay, WlrLayer::Top] {
+                if let Some(layer_surface) = layer_map.layer_under(layer, pos) {
+                    if let Some(geo) = layer_map.layer_geometry(layer_surface) {
+                        let rel = (pos.0 - geo.loc.x as f64, pos.1 - geo.loc.y as f64);
+                        if let Some((s, offset)) =
+                            layer_surface.surface_under(rel, WindowSurfaceType::ALL)
+                        {
+                            surface_under = Some((
+                                s,
+                                smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                                    geo.loc.x as f64 + offset.x as f64,
+                                    geo.loc.y as f64 + offset.y as f64,
+                                )),
+                            ));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if surface_under.is_none() {
+            let under = self.space.element_under(pos);
+            surface_under = under.and_then(|(window, loc)| {
+                let rel = (pos.0 - loc.x as f64, pos.1 - loc.y as f64);
+                window
+                    .surface_under(rel, WindowSurfaceType::ALL)
+                    .map(|(s, offset)| {
+                        (
+                            s,
+                            smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+                                loc.x as f64 + offset.x as f64,
+                                loc.y as f64 + offset.y as f64,
+                            )),
+                        )
+                    })
+            });
+        }
+
+        pointer.motion(
+            self,
+            surface_under,
+            &MotionEvent {
+                location: (new_x, new_y).into(),
+                serial,
+                time: event.time_msec(),
+            },
+        );
+        pointer.frame(self);
     }
 
     fn handle_pointer_motion_absolute<B: InputBackend>(

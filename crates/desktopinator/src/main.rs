@@ -3,6 +3,7 @@ mod audio;
 mod clipboard;
 mod config;
 mod displaycontrol;
+mod drm_backend;
 mod text;
 mod gfx;
 mod ipc;
@@ -341,9 +342,12 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
     let headless = args.iter().any(|a| a == "--headless");
+    let drm = args.iter().any(|a| a == "--drm");
     let cfg = config::load_config();
 
-    if headless {
+    if drm {
+        drm_backend::run_drm(&cfg)
+    } else if headless {
         // Parse --vnc-port PORT (CLI overrides config, default 5900)
         let vnc_port = args
             .windows(2)
@@ -2595,7 +2599,7 @@ fn run_headless(
 }
 
 /// Spawn XWayland and register it with the event loop.
-fn spawn_xwayland(
+pub(crate) fn spawn_xwayland(
     handle: &calloop::LoopHandle<'static, DinatorState>,
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
 ) -> anyhow::Result<()> {
@@ -2697,13 +2701,13 @@ enum KeyAction {
 }
 
 /// A registered plugin keybinding.
-struct PluginKeybinding {
+pub(crate) struct PluginKeybinding {
     /// Required modifier flags: (alt, ctrl, shift, logo).
-    mods: (bool, bool, bool, bool),
+    pub mods: (bool, bool, bool, bool),
     /// The XKB keysym to match.
-    keysym: u32,
+    pub keysym: u32,
     /// The callback ID to invoke.
-    callback_id: String,
+    pub callback_id: String,
 }
 
 /// Create an H.264 encoder with the given preference.
@@ -3002,7 +3006,7 @@ fn next_resolution(current_w: u16, current_h: u16, direction: i32) -> (u16, u16)
 
 /// Initialize the plugin runtimes (Lua + WASM) and load plugins from the config directory.
 /// Returns any plugin-registered keybindings.
-fn init_plugins(state: &mut DinatorState) -> Vec<PluginKeybinding> {
+pub(crate) fn init_plugins(state: &mut DinatorState) -> Vec<PluginKeybinding> {
     let plugin_dir = std::env::var("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {

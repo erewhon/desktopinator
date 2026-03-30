@@ -17,7 +17,13 @@ members = [
 smithay = { version = "0.7", default-features = false, features = [
     "backend_winit",
     "backend_egl",
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
     "renderer_gl",
+    "renderer_multi",
     "desktop",
     "wayland_frontend",
     "xwayland",
