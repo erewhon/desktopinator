@@ -37,11 +37,19 @@ use dinator_core::DinatorState;
 
 use crate::config;
 
+/// Combined state for the DRM backend event loop.
+struct DrmBackendData {
+    state: DinatorState,
+    renderer: Option<GlesRenderer>,
+    drm_outputs: HashMap<crtc::Handle, DrmOutputState>,
+    /// CRTCs that have a pending page flip (awaiting VBlank).
+    pending_flips: std::collections::HashSet<crtc::Handle>,
+}
+
 /// Per-output rendering state for DRM.
 struct DrmOutputState {
     output: Output,
     crtc: crtc::Handle,
-    /// GBM-buffered surface handles rendering + page flipping
     surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, ()>,
     damage_tracker: OutputDamageTracker,
 }
@@ -49,11 +57,11 @@ struct DrmOutputState {
 pub fn run_drm(cfg: &config::Config) -> anyhow::Result<()> {
     info!("starting desktopinator (DRM/KMS backend)");
 
-    let mut event_loop: EventLoop<DinatorState> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<DrmBackendData> = EventLoop::try_new()?;
     let display: Display<DinatorState> = Display::new()?;
     let display_handle = display.handle();
 
-    // Open a libseat session for privilege management
+    // Open a libseat session
     let (mut session, notifier) =
         LibSeatSession::new().context("failed to create libseat session")?;
     info!(seat = %session.seat(), "libseat session opened");
@@ -68,21 +76,12 @@ pub fn run_drm(cfg: &config::Config) -> anyhow::Result<()> {
     info!(socket = %socket_name, "wayland socket listening");
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
 
-    // Create compositor state
+    // Compositor state
     let mut state = DinatorState::new(display, event_loop.get_signal());
     let plugin_keybindings = crate::init_plugins(&mut state);
     state.plugin_keybindings = plugin_keybindings
         .into_iter()
-        .map(|kb| {
-            (
-                kb.keysym,
-                kb.mods.0,
-                kb.mods.1,
-                kb.mods.2,
-                kb.mods.3,
-                kb.callback_id,
-            )
-        })
+        .map(|kb| (kb.keysym, kb.mods.0, kb.mods.1, kb.mods.2, kb.mods.3, kb.callback_id))
         .collect();
 
     // Apply config
@@ -101,20 +100,23 @@ pub fn run_drm(cfg: &config::Config) -> anyhow::Result<()> {
     state.seat.add_keyboard(Default::default(), 200, 25)?;
     state.seat.add_pointer();
 
+    // Build the combined backend data
+    let mut data = DrmBackendData {
+        state,
+        renderer: None,
+        drm_outputs: HashMap::new(),
+        pending_flips: std::collections::HashSet::new(),
+    };
+
     // Accept Wayland clients
     event_loop
         .handle()
         .insert_source(
-            Generic::new(
-                listening_socket,
-                Interest::READ,
-                smithay::reexports::calloop::Mode::Level,
-            ),
-            |_, socket, state| {
+            Generic::new(listening_socket, Interest::READ, smithay::reexports::calloop::Mode::Level),
+            |_, socket, data| {
                 if let Some(stream) = socket.accept()? {
-                    let client_state =
-                        std::sync::Arc::new(dinator_core::ClientState::default());
-                    if let Err(e) = state.display_handle.insert_client(stream, client_state) {
+                    let client_state = std::sync::Arc::new(dinator_core::ClientState::default());
+                    if let Err(e) = data.state.display_handle.insert_client(stream, client_state) {
                         tracing::error!("failed to insert client: {e}");
                     }
                 }
@@ -126,55 +128,45 @@ pub fn run_drm(cfg: &config::Config) -> anyhow::Result<()> {
     // Session events (VT switching)
     event_loop
         .handle()
-        .insert_source(notifier, |event, _, _state| match event {
+        .insert_source(notifier, |event, _, _data| match event {
             SessionEvent::PauseSession => {
                 info!("session paused (VT switch away)");
+                // TODO: drop DRM master, pause rendering
             }
             SessionEvent::ActivateSession => {
                 info!("session resumed (VT switch back)");
+                // TODO: re-acquire DRM master, force full redraw
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to insert session source: {e}"))?;
 
-    // Udev backend — discover GPUs
-    let udev_backend =
-        UdevBackend::new(&session.seat()).context("failed to create udev backend")?;
+    // Udev — discover GPUs
+    let udev_backend = UdevBackend::new(&session.seat())
+        .context("failed to create udev backend")?;
 
-    // Track per-output DRM render state outside the calloop (shared via the state closure)
-    let mut drm_outputs: HashMap<crtc::Handle, DrmOutputState> = HashMap::new();
-    let mut renderer: Option<GlesRenderer> = None;
-
-    // Process initial GPU list
     for (dev_id, path) in udev_backend.device_list() {
         if let Err(e) = init_gpu(
-            dev_id,
-            &path,
-            &mut session,
-            &mut state,
-            &display_handle,
-            &mut event_loop,
-            &mut drm_outputs,
-            &mut renderer,
+            dev_id, &path, &mut session, &mut data, &display_handle, &mut event_loop,
         ) {
             tracing::warn!(path = %path.display(), error = %e, "failed to init GPU");
         }
     }
 
     info!(
-        outputs = drm_outputs.len(),
-        has_renderer = renderer.is_some(),
+        outputs = data.drm_outputs.len(),
+        has_renderer = data.renderer.is_some(),
         "GPU initialization complete"
     );
 
-    // Listen for GPU hotplug
+    // GPU hotplug
     event_loop
         .handle()
-        .insert_source(udev_backend, move |event, _, _state| match event {
+        .insert_source(udev_backend, |event, _, _data| match event {
             UdevEvent::Added { device_id: _, path } => {
                 info!(path = %path.display(), "GPU added (hotplug not yet supported)");
             }
             UdevEvent::Changed { device_id: _ } => {
-                info!("GPU changed (connector hotplug)");
+                info!("GPU changed (connector hotplug — rescan not yet supported)");
             }
             UdevEvent::Removed { device_id: _ } => {
                 info!("GPU removed");
@@ -182,65 +174,42 @@ pub fn run_drm(cfg: &config::Config) -> anyhow::Result<()> {
         })
         .map_err(|e| anyhow::anyhow!("failed to insert udev source: {e}"))?;
 
-    // Libinput — keyboard/mouse/touchpad
+    // Libinput
     let mut libinput = Libinput::new_with_udev(LibinputSessionInterface::from(session.clone()));
     libinput
         .udev_assign_seat(&session.seat())
         .map_err(|_| anyhow::anyhow!("failed to assign libinput seat"))?;
 
-    let libinput_backend = LibinputInputBackend::new(libinput.clone());
     event_loop
         .handle()
-        .insert_source(libinput_backend, |event, _, state| {
-            state.handle_input_event(event);
+        .insert_source(LibinputInputBackend::new(libinput), |event, _, data| {
+            data.state.handle_input_event(event);
         })
         .map_err(|e| anyhow::anyhow!("failed to insert libinput source: {e}"))?;
 
-    // XWayland
-    if let Err(e) = crate::spawn_xwayland(&event_loop.handle(), &display_handle) {
-        tracing::warn!(error = %e, "XWayland not available");
-    }
-
-    info!("entering event loop (DRM) -- launch clients with WAYLAND_DISPLAY={socket_name}");
+    // TODO: XWayland (spawn_xwayland expects LoopHandle<DinatorState>, need adapter)
+    info!("XWayland not yet supported in DRM backend");
 
     // Render timer — drives frame rendering for all outputs
     let timer = Timer::immediate();
     event_loop
         .handle()
-        .insert_source(timer, move |_, _, state| {
-            if let Some(ref mut r) = renderer {
-                for drm_out in drm_outputs.values_mut() {
-                    render_output(r, drm_out, state);
-                }
-            }
-
-            // Send frame callbacks
-            let elapsed = state.start_time.elapsed();
-            for output in state.space.outputs().cloned().collect::<Vec<_>>() {
-                state.space.elements().for_each(|window| {
-                    window.send_frame(&output, elapsed, None, |_, _| Some(output.clone()));
-                });
-                let layer_map = layer_map_for_output(&output);
-                for layer in layer_map.layers() {
-                    layer.send_frame(&output, elapsed, None, |_, _| Some(output.clone()));
-                }
-            }
-
-            state.space.refresh();
-
+        .insert_source(timer, |_, _, data| {
+            render_all(data);
             TimeoutAction::ToDuration(Duration::from_micros(1_000_000 / 60))
         })
-        .map_err(|e| anyhow::anyhow!("failed to insert timer source: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to insert timer: {e}"))?;
+
+    info!("entering event loop (DRM) -- launch clients with WAYLAND_DISPLAY={socket_name}");
 
     // Main event loop
-    let frame_interval = Duration::from_micros(1_000_000 / 60);
     event_loop
-        .run(frame_interval, &mut state, |state| {
-            let display_ptr = &mut state.display as *mut Display<DinatorState>;
-            if let Err(e) = unsafe { &mut *display_ptr }.dispatch_clients(state) {
+        .run(Duration::from_micros(1_000_000 / 60), &mut data, |data| {
+            let display_ptr = &mut data.state.display as *mut Display<DinatorState>;
+            if let Err(e) = unsafe { &mut *display_ptr }.dispatch_clients(&mut data.state) {
                 tracing::error!("dispatch_clients error: {e}");
             }
-            if let Err(e) = state.display.flush_clients() {
+            if let Err(e) = data.state.display.flush_clients() {
                 tracing::error!("flush_clients error: {e}");
             }
         })
@@ -249,10 +218,47 @@ pub fn run_drm(cfg: &config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn render_output(renderer: &mut GlesRenderer, drm_out: &mut DrmOutputState, state: &mut DinatorState) {
+/// Render all outputs and send frame callbacks.
+fn render_all(data: &mut DrmBackendData) {
+    let Some(ref mut renderer) = data.renderer else { return };
+
+    let crtcs: Vec<crtc::Handle> = data.drm_outputs.keys().copied().collect();
+    for crtc in crtcs {
+        // Skip outputs with pending page flips
+        if data.pending_flips.contains(&crtc) {
+            continue;
+        }
+
+        let drm_out = data.drm_outputs.get_mut(&crtc).unwrap();
+        if render_output(renderer, drm_out, &mut data.state) {
+            data.pending_flips.insert(crtc);
+        }
+    }
+
+    // Send frame callbacks
+    let elapsed = data.state.start_time.elapsed();
+    for output in data.state.space.outputs().cloned().collect::<Vec<_>>() {
+        data.state.space.elements().for_each(|window| {
+            window.send_frame(&output, elapsed, None, |_, _| Some(output.clone()));
+        });
+        let layer_map = layer_map_for_output(&output);
+        for layer in layer_map.layers() {
+            layer.send_frame(&output, elapsed, None, |_, _| Some(output.clone()));
+        }
+    }
+
+    data.state.space.refresh();
+}
+
+/// Render a single output. Returns true if a buffer was queued (page flip pending).
+fn render_output(
+    renderer: &mut GlesRenderer,
+    drm_out: &mut DrmOutputState,
+    state: &mut DinatorState,
+) -> bool {
     let elements = match crate::build_render_elements(renderer, state, &drm_out.output) {
         Some(e) => e,
-        None => return,
+        None => return false,
     };
 
     let bg = crate::background_clear_color(state.background_for_output(&drm_out.output));
@@ -261,38 +267,36 @@ fn render_output(renderer: &mut GlesRenderer, drm_out: &mut DrmOutputState, stat
     let (mut dmabuf, _age) = match drm_out.surface.next_buffer() {
         Ok(b) => b,
         Err(e) => {
-            tracing::warn!(output = %drm_out.output.name(), error = ?e, "DRM next_buffer failed");
-            return;
+            tracing::warn!(output = %drm_out.output.name(), error = ?e, "next_buffer failed");
+            return false;
         }
     };
 
-    // Bind dmabuf to renderer → get framebuffer target
+    // Bind → render → queue
     let mut target = match renderer.bind(&mut dmabuf) {
         Ok(t) => t,
         Err(e) => {
-            tracing::warn!(output = %drm_out.output.name(), error = ?e, "DRM bind failed");
-            return;
+            tracing::warn!(output = %drm_out.output.name(), error = ?e, "bind failed");
+            return false;
         }
     };
 
-    // Render with damage tracking
-    match drm_out.damage_tracker.render_output(
-        renderer,
-        &mut target,
-        0, // age=0 forces full redraw for now
-        &elements,
-        bg,
-    ) {
-        Ok(_) => {
-            drop(target); // release the framebuffer before queuing
-            if let Err(e) = drm_out.surface.queue_buffer(None, None, ()) {
-                tracing::warn!(output = %drm_out.output.name(), error = ?e, "DRM queue failed");
-            }
+    let render_ok = drm_out
+        .damage_tracker
+        .render_output(renderer, &mut target, 0, &elements, bg)
+        .is_ok();
+
+    drop(target);
+
+    if render_ok {
+        if let Err(e) = drm_out.surface.queue_buffer(None, None, ()) {
+            tracing::warn!(output = %drm_out.output.name(), error = ?e, "queue_buffer failed");
+            return false;
         }
-        Err(e) => {
-            tracing::warn!(output = %drm_out.output.name(), error = ?e, "DRM render failed");
-        }
+        return true;
     }
+
+    false
 }
 
 type dev_t = smithay::reexports::rustix::fs::Dev;
@@ -301,13 +305,10 @@ fn init_gpu(
     dev_id: dev_t,
     path: &Path,
     session: &mut LibSeatSession,
-    state: &mut DinatorState,
+    data: &mut DrmBackendData,
     display_handle: &smithay::reexports::wayland_server::DisplayHandle,
-    event_loop: &mut EventLoop<DinatorState>,
-    drm_outputs: &mut HashMap<crtc::Handle, DrmOutputState>,
-    renderer: &mut Option<GlesRenderer>,
+    event_loop: &mut EventLoop<DrmBackendData>,
 ) -> anyhow::Result<()> {
-    // Only process DRM devices
     let node = match DrmNode::from_dev_id(dev_id) {
         Ok(n) => n,
         Err(_) => return Ok(()),
@@ -317,14 +318,8 @@ fn init_gpu(
         .and_then(|n| n.ok())
         .unwrap_or(node);
 
-    info!(
-        path = %path.display(),
-        node = %node,
-        render = %render_node,
-        "initializing GPU"
-    );
+    info!(path = %path.display(), node = %node, render = %render_node, "initializing GPU");
 
-    // Open the DRM device via the session (for privilege escalation)
     let fd = session
         .open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY)
         .context("failed to open DRM device")?;
@@ -335,43 +330,39 @@ fn init_gpu(
 
     let gbm = GbmDevice::new(drm_fd.clone()).context("failed to create GBM device")?;
 
-    // Create EGL display and renderer from this GPU
-    if renderer.is_none() {
-        let egl_display = unsafe { EGLDisplay::new(gbm.clone()) }
-            .context("failed to create EGL display from GBM")?;
+    // Create renderer from this GPU (first GPU only)
+    if data.renderer.is_none() {
+        let egl_display =
+            unsafe { EGLDisplay::new(gbm.clone()) }.context("failed to create EGL display")?;
         let egl_context =
             EGLContext::new(&egl_display).context("failed to create EGL context")?;
-        let gles = unsafe { GlesRenderer::new(egl_context) }
-            .context("failed to create GLES renderer")?;
-
-        info!(
-            "EGL/GLES renderer created from GPU {}",
-            path.display()
-        );
-        *renderer = Some(gles);
+        let gles =
+            unsafe { GlesRenderer::new(egl_context) }.context("failed to create GLES renderer")?;
+        info!("EGL/GLES renderer created from GPU {}", path.display());
+        data.renderer = Some(gles);
     }
 
-    // Register DRM device for VBlank events
+    // Register DRM notifier for VBlank events
     event_loop
         .handle()
-        .insert_source(drm_notifier, move |event, metadata, _state| {
-            match event {
-                DrmEvent::VBlank(crtc) => {
-                    tracing::trace!(?crtc, "VBlank");
+        .insert_source(drm_notifier, |event, _, data| match event {
+            DrmEvent::VBlank(crtc) => {
+                // Page flip complete — release buffer back to swapchain
+                if let Some(drm_out) = data.drm_outputs.get_mut(&crtc) {
+                    if let Err(e) = drm_out.surface.frame_submitted() {
+                        tracing::warn!(?crtc, error = ?e, "frame_submitted failed");
+                    }
                 }
-                DrmEvent::Error(e) => {
-                    tracing::error!(error = ?e, "DRM error");
-                }
+                data.pending_flips.remove(&crtc);
+            }
+            DrmEvent::Error(e) => {
+                tracing::error!(error = ?e, "DRM error");
             }
         })
         .map_err(|e| anyhow::anyhow!("failed to insert DRM notifier: {e}"))?;
 
-    // Scan connectors and create outputs
-    let res = drm
-        .resource_handles()
-        .context("failed to get DRM resources")?;
-
-    let cursor_size = drm.cursor_size();
+    // Scan connectors
+    let res = drm.resource_handles().context("failed to get DRM resources")?;
 
     for conn in res.connectors() {
         let conn_info = match drm.get_connector(*conn, false) {
@@ -382,7 +373,6 @@ fn init_gpu(
             continue;
         }
 
-        // Find a CRTC for this connector
         let encoder = conn_info
             .current_encoder()
             .and_then(|e| drm.get_encoder(e).ok());
@@ -391,24 +381,20 @@ fn init_gpu(
             .and_then(|e| e.crtc())
             .or_else(|| {
                 conn_info.encoders().iter().find_map(|e| {
-                    drm.get_encoder(*e).ok().and_then(|_enc| {
+                    drm.get_encoder(*e).ok().and_then(|_| {
                         res.crtcs()
                             .iter()
-                            .find(|&&c| !drm_outputs.contains_key(&c))
+                            .find(|&&c| !data.drm_outputs.contains_key(&c))
                             .copied()
                     })
                 })
             });
 
         let Some(crtc) = crtc_handle else {
-            tracing::warn!(
-                "no CRTC available for connector {:?}",
-                conn_info.interface()
-            );
+            tracing::warn!("no CRTC for connector {:?}", conn_info.interface());
             continue;
         };
 
-        // Pick the preferred mode
         let drm_mode = conn_info
             .modes()
             .iter()
@@ -424,31 +410,28 @@ fn init_gpu(
         let (w, h) = (drm_mode.size().0 as i32, drm_mode.size().1 as i32);
         let refresh = drm_mode.vrefresh() as i32 * 1000;
 
-        // Create DRM surface
+        // Create DRM surface + GBM buffered surface
         let drm_surface = drm
             .create_surface(crtc, drm_mode, &[*conn])
             .context("failed to create DRM surface")?;
 
-        // Create GBM buffered surface for rendering + page flipping
-        let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
-
-        let color_formats = &[DrmFourcc::Argb8888, DrmFourcc::Xrgb8888];
+        let allocator =
+            GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
 
         let gbm_surface = GbmBufferedSurface::new(
             drm_surface,
             allocator,
-            color_formats,
-            renderer.as_ref().unwrap().dmabuf_formats(),
+            &[DrmFourcc::Argb8888, DrmFourcc::Xrgb8888],
+            data.renderer.as_ref().unwrap().dmabuf_formats(),
         )
         .context("failed to create GBM buffered surface")?;
 
-        // Create Smithay output
+        // Smithay Output
         let connector_name = format!(
             "{}-{}",
             conn_info.interface().as_str(),
             conn_info.interface_id()
         );
-
         let physical_size = (
             conn_info.size().unwrap_or((0, 0)).0 as i32,
             conn_info.size().unwrap_or((0, 0)).1 as i32,
@@ -472,17 +455,17 @@ fn init_gpu(
         output.set_preferred(smithay_mode);
         output.create_global::<DinatorState>(display_handle);
 
-        // Position outputs side by side
-        let x_offset: i32 = state
+        let x_offset: i32 = data
+            .state
             .space
             .outputs()
-            .filter_map(|o| state.space.output_geometry(o))
+            .filter_map(|o| data.state.space.output_geometry(o))
             .map(|g| g.loc.x + g.size.w)
             .max()
             .unwrap_or(0);
 
-        state.space.map_output(&output, (x_offset, 0));
-        state.register_output(&output);
+        data.state.space.map_output(&output, (x_offset, 0));
+        data.state.register_output(&output);
 
         let damage_tracker = OutputDamageTracker::from_output(&output);
 
@@ -492,7 +475,7 @@ fn init_gpu(
             "DRM output created"
         );
 
-        drm_outputs.insert(
+        data.drm_outputs.insert(
             crtc,
             DrmOutputState {
                 output,
