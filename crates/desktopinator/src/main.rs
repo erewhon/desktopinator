@@ -106,10 +106,29 @@ impl RenderElement<GlesRenderer> for OutputRenderElements {
 }
 
 /// Build the render element list: space elements + focus border.
+/// `render_cursor`: if false, skip the software cursor (RDP sends cursor separately).
 pub(crate) fn build_render_elements(
     renderer: &mut GlesRenderer,
     state: &DinatorState,
     output: &Output,
+) -> Option<Vec<OutputRenderElements>> {
+    build_render_elements_inner(renderer, state, output, true)
+}
+
+/// Build render elements, optionally skipping the software cursor.
+pub(crate) fn build_render_elements_no_cursor(
+    renderer: &mut GlesRenderer,
+    state: &DinatorState,
+    output: &Output,
+) -> Option<Vec<OutputRenderElements>> {
+    build_render_elements_inner(renderer, state, output, false)
+}
+
+fn build_render_elements_inner(
+    renderer: &mut GlesRenderer,
+    state: &DinatorState,
+    output: &Output,
+    render_cursor: bool,
 ) -> Option<Vec<OutputRenderElements>> {
     let space_elements: Vec<SpaceElements> = match state
         .space
@@ -274,7 +293,8 @@ pub(crate) fn build_render_elements(
         }
     }
 
-    // Render cursor as a small white square at pointer position (only on the output containing it)
+    // Software cursor — skipped when RDP sends cursor position separately
+    if render_cursor {
     if let Some(pointer) = state.seat.get_pointer() {
         let pos = pointer.current_location();
         let cursor_rect = Rectangle::new((pos.x as i32, pos.y as i32).into(), (8, 8).into());
@@ -299,6 +319,7 @@ pub(crate) fn build_render_elements(
             );
         }
     }
+    } // if render_cursor
 
     // Render gradient background as horizontal bands (behind everything else)
     if let dinator_core::Background::Gradient { top, bottom } = state.background_for_output(output)
@@ -1906,6 +1927,9 @@ fn run_headless(
     let mut gfx_frames_dropped: u64 = 0;
     let mut last_keyframe_time = std::time::Instant::now();
     let keyframe_cooldown = Duration::from_secs(2);
+    // Track last sent cursor position to avoid redundant updates
+    let mut last_cursor_pos: (u16, u16) = (0, 0);
+    let mut cursor_hidden = true; // start hidden, send default on first frame
     // Bandwidth throttle: track bytes sent in a rolling window to avoid
     // overwhelming the DVC channel during rapid window switching
     let mut bytes_sent_window: u64 = 0;
@@ -2185,7 +2209,7 @@ fn run_headless(
 
                 match renderer.bind(rb) {
                     Ok(mut target) => {
-                        let damage_rects: Vec<Rectangle<i32, Physical>> = if let Some(elements) = build_render_elements(&mut renderer, state, o) {
+                        let damage_rects: Vec<Rectangle<i32, Physical>> = if let Some(elements) = build_render_elements_no_cursor(&mut renderer, state, o) {
                             match dt.render_output(
                                 &mut renderer,
                                 &mut target,
@@ -2566,6 +2590,44 @@ fn run_headless(
                 // Send to RDP bitmap pipeline only if GFX is NOT active
                 if !gfx_ready {
                     let _ = rdp_pixel_tx.try_send(vnc_frame);
+                }
+            }
+
+            // Send cursor position via RDP pointer updates (not composited)
+            if state.rdp_clients > 0 {
+                if let Some(pointer) = state.seat.get_pointer() {
+                    let pos = pointer.current_location();
+                    let cx = pos.x.max(0.0) as u16;
+                    let cy = pos.y.max(0.0) as u16;
+
+                    // Send default pointer shape on first cursor movement
+                    if cursor_hidden {
+                        if let Ok(guard) = rdp_update_tx_render.try_lock() {
+                            if let Some(ref tx) = *guard {
+                                let _ = tx.try_send(
+                                    ironrdp_server::DisplayUpdate::DefaultPointer,
+                                );
+                            }
+                        }
+                        cursor_hidden = false;
+                    }
+
+                    // Only send position if it changed
+                    if (cx, cy) != last_cursor_pos {
+                        last_cursor_pos = (cx, cy);
+                        if let Ok(guard) = rdp_update_tx_render.try_lock() {
+                            if let Some(ref tx) = *guard {
+                                let _ = tx.try_send(
+                                    ironrdp_server::DisplayUpdate::PointerPosition(
+                                        ironrdp_pdu::pointer::Point16 {
+                                            x: cx,
+                                            y: cy,
+                                        },
+                                    ),
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
