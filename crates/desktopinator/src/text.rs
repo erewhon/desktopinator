@@ -7,11 +7,16 @@ const FONT_BYTES: &[u8] = include_bytes!("../assets/Inter.ttf");
 
 fn font() -> &'static Font {
     FONT.get_or_init(|| {
-        Font::from_bytes(FONT_BYTES, FontSettings::default()).expect("failed to load embedded font")
+        Font::from_bytes(FONT_BYTES, FontSettings {
+            scale: 40.0,
+            ..FontSettings::default()
+        })
+        .expect("failed to load embedded font")
     })
 }
 
 /// Render text into an ARGB8888 pixel buffer.
+/// Renders at 2x resolution internally then downscales for smoother anti-aliasing.
 /// Returns the buffer as Vec<u8> with dimensions (width, height).
 pub fn render_text(
     text: &str,
@@ -21,9 +26,14 @@ pub fn render_text(
     height: i32,
 ) -> (Vec<u8>, i32, i32) {
     let font = font();
-    let px_size = font_size;
 
-    // Rasterize each glyph and compute total width
+    // Render at 2x for supersampled anti-aliasing
+    let scale = 2;
+    let px_size = font_size * scale as f32;
+    let hi_max_w = max_width * scale;
+    let hi_h = height * scale;
+
+    // Rasterize each glyph at 2x
     let mut glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = Vec::new();
     let mut total_width: i32 = 0;
 
@@ -33,19 +43,16 @@ pub fn render_text(
         glyphs.push((metrics, bitmap));
     }
 
-    let buf_w = total_width.min(max_width).max(1);
-    let buf_h = height.max(1);
-    let mut pixels = vec![0u8; (buf_w * buf_h * 4) as usize];
+    let hi_w = total_width.min(hi_max_w).max(1);
+    let mut hi_alpha = vec![0u8; (hi_w * hi_h) as usize];
 
-    // Baseline: place text vertically centered
+    // Baseline at 2x
     let metrics = font.horizontal_line_metrics(px_size);
     let baseline = if let Some(m) = metrics {
-        let ascent = m.ascent;
-        let descent = m.descent;
-        let text_h = ascent - descent;
-        ((buf_h as f32 - text_h) / 2.0 + ascent) as i32
+        let text_h = m.ascent - m.descent;
+        ((hi_h as f32 - text_h) / 2.0 + m.ascent) as i32
     } else {
-        buf_h * 3 / 4
+        hi_h * 3 / 4
     };
 
     let mut cursor_x: i32 = 0;
@@ -58,34 +65,57 @@ pub fn render_text(
             for col in 0..metrics.width {
                 let px = gx + col as i32;
                 let py = gy + row as i32;
-                if px < 0 || px >= buf_w || py < 0 || py >= buf_h {
+                if px < 0 || px >= hi_w || py < 0 || py >= hi_h {
                     continue;
                 }
-                let raw_alpha = bitmap[row * metrics.width + col];
-                if raw_alpha == 0 {
-                    continue;
-                }
-                // Soften the rendering for a lighter appearance
-                let alpha = (raw_alpha as u16 * 200 / 255) as u8;
-                let offset = ((py * buf_w + px) * 4) as usize;
-                // ARGB8888: [B, G, R, A] in little-endian memory
-                let existing_a = pixels[offset + 3] as u16;
-                let new_a = alpha as u16;
-                let out_a = new_a + existing_a * (255 - new_a) / 255;
-                if out_a > 0 {
-                    pixels[offset] = ((color[2] as u16 * new_a + pixels[offset] as u16 * existing_a * (255 - new_a) / 255) / out_a) as u8;
-                    pixels[offset + 1] = ((color[1] as u16 * new_a + pixels[offset + 1] as u16 * existing_a * (255 - new_a) / 255) / out_a) as u8;
-                    pixels[offset + 2] = ((color[0] as u16 * new_a + pixels[offset + 2] as u16 * existing_a * (255 - new_a) / 255) / out_a) as u8;
-                    pixels[offset + 3] = out_a as u8;
+                let a = bitmap[row * metrics.width + col];
+                if a > 0 {
+                    let idx = (py * hi_w + px) as usize;
+                    // Max blend for overlapping glyphs
+                    hi_alpha[idx] = hi_alpha[idx].max(a);
                 }
             }
         }
 
         cursor_x += metrics.advance_width as i32;
-        if cursor_x >= max_width {
+        if cursor_x >= hi_max_w {
             break;
         }
     }
 
-    (pixels, buf_w, buf_h)
+    // Downsample 2x → 1x with box filter (average 2x2 blocks)
+    let out_w = (hi_w / scale).max(1);
+    let out_h = (hi_h / scale).max(1);
+    let mut pixels = vec![0u8; (out_w * out_h * 4) as usize];
+
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let sx = x * scale;
+            let sy = y * scale;
+
+            // Average 2x2 block of alpha values
+            let mut sum = 0u32;
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    let hx = (sx + dx).min(hi_w - 1);
+                    let hy = (sy + dy).min(hi_h - 1);
+                    sum += hi_alpha[(hy * hi_w + hx) as usize] as u32;
+                }
+            }
+            let alpha = (sum / (scale * scale) as u32) as u8;
+
+            if alpha > 0 {
+                let offset = ((y * out_w + x) * 4) as usize;
+                // ARGB8888 little-endian: [B, G, R, A]
+                // Pre-multiplied alpha for clean compositing
+                let a = alpha as u16;
+                pixels[offset] = (color[2] as u16 * a / 255) as u8;
+                pixels[offset + 1] = (color[1] as u16 * a / 255) as u8;
+                pixels[offset + 2] = (color[0] as u16 * a / 255) as u8;
+                pixels[offset + 3] = alpha;
+            }
+        }
+    }
+
+    (pixels, out_w, out_h)
 }

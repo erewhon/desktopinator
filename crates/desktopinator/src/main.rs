@@ -265,7 +265,7 @@ fn build_render_elements_inner(
                 };
                 let text_x = tab_x + 12; // padding after accent stripe
                 let text_max_w = tab_w - 20;
-                let (pixels, tw, th) = text::render_text(&label, 16.0, text_color, text_max_w, tab_h);
+                let (pixels, tw, th) = text::render_text(&label, 17.0, text_color, text_max_w, tab_h);
                 if tw > 0 && th > 0 {
                     use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
                     let buf = MemoryRenderBuffer::from_slice(
