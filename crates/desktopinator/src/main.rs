@@ -1906,6 +1906,11 @@ fn run_headless(
     let mut gfx_frames_dropped: u64 = 0;
     let mut last_keyframe_time = std::time::Instant::now();
     let keyframe_cooldown = Duration::from_secs(2);
+    // Bandwidth throttle: track bytes sent in a rolling window to avoid
+    // overwhelming the DVC channel during rapid window switching
+    let mut bytes_sent_window: u64 = 0;
+    let mut window_start = std::time::Instant::now();
+    const MAX_BYTES_PER_SECOND: u64 = 5_000_000; // 5MB/s limit
     // Second encoder for AVC444 chroma stream (per output)
     let mut chroma_encoders: HashMap<String, Box<dyn dinator_encode::Encoder>> = HashMap::new();
     // Reusable buffers for AVC444 YUV444 conversion
@@ -2372,7 +2377,16 @@ fn run_headless(
                                     let h264_len = encoded.data.len();
                                     const MAX_GFX_FRAME_BYTES: usize = 512_000;
 
-                                    if h264_len < 50 && !encoded.is_keyframe {
+                                    // Reset bandwidth window every second
+                                    if window_start.elapsed() >= Duration::from_secs(1) {
+                                        bytes_sent_window = 0;
+                                        window_start = std::time::Instant::now();
+                                    }
+
+                                    // Bandwidth throttle: skip non-keyframe if over limit
+                                    if bytes_sent_window > MAX_BYTES_PER_SECOND && !encoded.is_keyframe {
+                                        gfx_state_render.lock().unwrap().next_frame_id += 1;
+                                    } else if h264_len < 50 && !encoded.is_keyframe {
                                         // No visual change — skip
                                     } else if h264_len > MAX_GFX_FRAME_BYTES && !encoded.is_keyframe {
                                         gfx_frames_dropped += 1;
@@ -2521,6 +2535,7 @@ fn run_headless(
                                                                 "GFX: sending per-surface frame"
                                                             );
                                                         }
+                                                        bytes_sent_window += gfx_data.len() as u64;
                                                         let _ = tx.send(ironrdp_server::ServerEvent::Dvc {
                                                             channel_id,
                                                             data: gfx_data,

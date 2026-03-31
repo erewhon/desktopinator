@@ -1262,14 +1262,14 @@ impl DinatorState {
                 info!(idx = next_idx, "focus cycled");
             }
 
-            // In stacked/monocle layouts, move the focused window to front
-            // so it gets the main area
+            // In stacked/monocle layouts, rotate the list so the focused
+            // window is at index 0. Use rotation (not move-to-front) to
+            // preserve the relative order and avoid skipping windows.
             if self.layout_name() == "stacked" || self.layout_name() == "monocle" {
                 let order = self.ws_window_list_mut(ws);
                 if let Some(pos) = order.iter().position(|w| *w == next_id) {
                     if pos != 0 {
-                        let id = order.remove(pos);
-                        order.insert(0, id);
+                        order.rotate_left(pos);
                     }
                 }
                 if let Some(output) = self.get_focused_output() {
