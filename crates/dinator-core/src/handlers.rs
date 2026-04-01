@@ -230,6 +230,11 @@ impl XdgShellHandler for DinatorState {
 
         info!("new toplevel window");
 
+        // Clear launch-in-progress cursor
+        self.pending_cursor = Some(CursorImageStatus::Named(
+            smithay::input::pointer::CursorIcon::Default,
+        ));
+
         self.window_map.insert(id, window.clone());
         self.surface_to_id.insert(surface.wl_surface().clone(), id);
         self.window_workspace.insert(id, ws);
@@ -649,6 +654,7 @@ impl SeatHandler for DinatorState {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        tracing::info!(?image, "cursor_image changed");
         self.pending_cursor = Some(image);
     }
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {

@@ -277,6 +277,11 @@ impl DinatorState {
             return;
         }
 
+        // Clear launch-in-progress cursor
+        self.pending_cursor = Some(smithay::input::pointer::CursorImageStatus::Named(
+            smithay::input::pointer::CursorIcon::Default,
+        ));
+
         let id = Self::next_window_id();
         let smithay_window = Window::new_x11_window(window.clone());
         let ws = self.focused_workspace();

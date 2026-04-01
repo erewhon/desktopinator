@@ -2,6 +2,7 @@ mod adaptive;
 mod audio;
 mod clipboard;
 mod config;
+mod cursors;
 mod displaycontrol;
 mod drm_backend;
 mod text;
@@ -2604,11 +2605,22 @@ fn run_headless(
                             cursor_hidden = true;
                             Some(ironrdp_server::DisplayUpdate::HidePointer)
                         }
-                        CursorImageStatus::Named(_icon) => {
-                            // Named cursor — send default system pointer
-                            // TODO: render specific cursor shapes for different icons
+                        CursorImageStatus::Named(ref icon) => {
                             cursor_hidden = false;
-                            Some(ironrdp_server::DisplayUpdate::DefaultPointer)
+                            let name = cursors::cursor_icon_to_name(icon);
+                            if let Some((w, h, hx, hy, data)) = cursors::load_named_cursor(name) {
+                                Some(ironrdp_server::DisplayUpdate::RGBAPointer(
+                                    ironrdp_server::RGBAPointer {
+                                        width: *w,
+                                        height: *h,
+                                        hot_x: *hx,
+                                        hot_y: *hy,
+                                        data: data.clone(),
+                                    },
+                                ))
+                            } else {
+                                Some(ironrdp_server::DisplayUpdate::DefaultPointer)
+                            }
                         }
                         CursorImageStatus::Surface(ref surface) => {
                             // Custom cursor from Wayland client — extract RGBA pixels

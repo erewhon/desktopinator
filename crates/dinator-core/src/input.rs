@@ -5,7 +5,7 @@ use smithay::backend::input::{
 use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
 use smithay::input::keyboard::keysyms;
 use smithay::input::keyboard::FilterResult;
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, CursorImageStatus, MotionEvent};
 use smithay::utils::SERIAL_COUNTER;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
@@ -158,6 +158,10 @@ impl DinatorState {
                     if let Err(e) = std::process::Command::new("foot").spawn() {
                         info!(error = %e, "failed to launch foot");
                     }
+                    // Show progress cursor while app launches
+                    self.pending_cursor = Some(CursorImageStatus::Named(
+                        smithay::input::pointer::CursorIcon::Progress,
+                    ));
                 }
                 KeyAction::LaunchLauncher => {
                     info!("keybinding: launch fuzzel");

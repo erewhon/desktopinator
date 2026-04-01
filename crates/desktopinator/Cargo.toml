@@ -33,3 +33,4 @@ pipewire = { version = "0.9", features = ["v0_3_33"] }
 serde = { workspace = true }
 toml = "0.8"
 fontdue = "0.9"
+xcursor = "0.3"
