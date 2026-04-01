@@ -281,6 +281,7 @@ impl DinatorState {
         self.pending_cursor = Some(smithay::input::pointer::CursorImageStatus::Named(
             smithay::input::pointer::CursorIcon::Default,
         ));
+        self.launch_cursor_set_at = None;
 
         let id = Self::next_window_id();
         let smithay_window = Window::new_x11_window(window.clone());

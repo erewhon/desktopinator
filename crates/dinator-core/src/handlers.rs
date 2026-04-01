@@ -234,6 +234,7 @@ impl XdgShellHandler for DinatorState {
         self.pending_cursor = Some(CursorImageStatus::Named(
             smithay::input::pointer::CursorIcon::Default,
         ));
+        self.launch_cursor_set_at = None;
 
         self.window_map.insert(id, window.clone());
         self.surface_to_id.insert(surface.wl_surface().clone(), id);
@@ -607,6 +608,12 @@ impl XdgActivationHandler for DinatorState {
         token_data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        // Show progress cursor — an app is starting
+        self.pending_cursor = Some(CursorImageStatus::Named(
+            smithay::input::pointer::CursorIcon::Progress,
+        ));
+        self.launch_cursor_set_at = Some(std::time::Instant::now());
+
         // Only honor recent activation requests (within 10 seconds)
         if token_data.timestamp.elapsed().as_secs() < 10 {
             // Find and focus the window that requested activation

@@ -2596,6 +2596,18 @@ fn run_headless(
 
             // Send cursor shape + position via RDP pointer updates
             if state.rdp_clients > 0 {
+                // Auto-reset progress cursor after 5 seconds
+                if let Some(set_at) = state.launch_cursor_set_at {
+                    if set_at.elapsed() > Duration::from_secs(5) {
+                        state.pending_cursor = Some(
+                            smithay::input::pointer::CursorImageStatus::Named(
+                                smithay::input::pointer::CursorIcon::Default,
+                            ),
+                        );
+                        state.launch_cursor_set_at = None;
+                    }
+                }
+
                 // Process pending cursor shape changes
                 if let Some(cursor_status) = state.pending_cursor.take() {
                     use smithay::input::pointer::CursorImageStatus;

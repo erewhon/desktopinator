@@ -162,6 +162,7 @@ impl DinatorState {
                     self.pending_cursor = Some(CursorImageStatus::Named(
                         smithay::input::pointer::CursorIcon::Progress,
                     ));
+                    self.launch_cursor_set_at = Some(std::time::Instant::now());
                 }
                 KeyAction::LaunchLauncher => {
                     info!("keybinding: launch fuzzel");

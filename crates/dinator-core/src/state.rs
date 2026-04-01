@@ -204,6 +204,8 @@ pub struct DinatorState {
     pub vnc_clients: u32,
     /// Pending cursor image change — consumed by the render loop to send to RDP/VNC.
     pub pending_cursor: Option<CursorImageStatus>,
+    /// When the progress cursor was set — auto-resets after timeout.
+    pub launch_cursor_set_at: Option<std::time::Instant>,
 
     // XWayland
     pub xwayland_shell_state: XWaylandShellState,
@@ -279,6 +281,7 @@ impl DinatorState {
             rdp_clipboard_text: None,
             rdp_clients: 0,
             pending_cursor: None,
+            launch_cursor_set_at: None,
             vnc_clients: 0,
             xwayland_shell_state,
             x11_wm: None,
