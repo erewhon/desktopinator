@@ -196,6 +196,7 @@ pub struct DinatorState {
     // Clipboard sync (RDP ↔ Wayland)
     /// Called when a Wayland client sets the clipboard. Receives UTF-8 text.
     pub on_clipboard_change: Option<Box<dyn Fn(String)>>,
+    pub on_image_clipboard_change: Option<Box<dyn Fn(Vec<u8>)>>,
     /// Text from RDP client clipboard, available for Wayland apps to paste.
     pub rdp_clipboard_text: Option<String>,
 
@@ -278,6 +279,7 @@ impl DinatorState {
             workspace_order: HashMap::new(),
             workspace_focus: HashMap::new(),
             on_clipboard_change: None,
+            on_image_clipboard_change: None,
             rdp_clipboard_text: None,
             rdp_clients: 0,
             pending_cursor: None,

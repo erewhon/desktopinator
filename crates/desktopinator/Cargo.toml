@@ -34,3 +34,4 @@ serde = { workspace = true }
 toml = "0.8"
 fontdue = "0.9"
 xcursor = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }

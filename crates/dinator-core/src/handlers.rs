@@ -475,8 +475,46 @@ impl SelectionHandler for DinatorState {
         }
 
         if let Some(source) = source {
-            // Check for text mime types
             let mime_types = source.mime_types();
+
+            // Check for image mime types first
+            let image_mime = mime_types
+                .iter()
+                .find(|m| m.starts_with("image/png") || m.starts_with("image/bmp"))
+                .cloned();
+
+            if let Some(mime) = image_mime.clone() {
+                use std::io::Read;
+                use std::os::unix::io::FromRawFd;
+
+                if let Ok((read_end, write_end)) = std::os::unix::net::UnixStream::pair() {
+                    let write_fd = unsafe {
+                        std::os::unix::io::OwnedFd::from_raw_fd(
+                            std::os::unix::io::IntoRawFd::into_raw_fd(write_end),
+                        )
+                    };
+                    let _ = data_device::request_data_device_client_selection::<Self>(
+                        &seat, mime.clone(), write_fd,
+                    );
+                    let mut read_stream = read_end;
+                    let _ = read_stream.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                    let mut buf = Vec::new();
+                    let _ = read_stream.read_to_end(&mut buf);
+
+                    if !buf.is_empty() {
+                        tracing::info!(
+                            mime = %mime,
+                            bytes = buf.len(),
+                            "clipboard: Wayland app copied image"
+                        );
+                        if let Some(ref callback) = self.on_image_clipboard_change {
+                            callback(buf);
+                        }
+                    }
+                }
+            }
+
+            // Check for text mime types
             let text_mime = mime_types
                 .iter()
                 .find(|m| {

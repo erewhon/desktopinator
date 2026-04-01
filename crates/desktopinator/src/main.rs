@@ -1047,6 +1047,32 @@ fn run_headless(
                 ));
             }
         }));
+
+        // Image clipboard: Wayland → RDP
+        let clipboard_state_img = clipboard_state_render.clone();
+        let rdp_event_tx_img = rdp_event_tx_clipboard.clone();
+        state.on_image_clipboard_change = Some(Box::new(move |png_data: Vec<u8>| {
+            {
+                let mut cs = clipboard_state_img.lock().unwrap();
+                cs.wayland_image = Some(png_data);
+                cs.rdp_owns_clipboard = false;
+            }
+            if let Some(ref tx) = *rdp_event_tx_img.lock().unwrap() {
+                let formats = vec![
+                    ironrdp_cliprdr::pdu::ClipboardFormat {
+                        id: ironrdp_cliprdr::pdu::ClipboardFormatId(8), // CF_DIB
+                        name: None,
+                    },
+                    ironrdp_cliprdr::pdu::ClipboardFormat {
+                        id: ironrdp_cliprdr::pdu::ClipboardFormatId(13), // CF_UNICODETEXT (in case text also available)
+                        name: None,
+                    },
+                ];
+                let _ = tx.send(ironrdp_server::ServerEvent::Clipboard(
+                    ironrdp_cliprdr::backend::ClipboardMessage::SendInitiateCopy(formats),
+                ));
+            }
+        }));
     }
 
     output.create_global::<DinatorState>(&display_handle);
