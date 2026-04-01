@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use smithay::desktop::{Space, Window};
+use smithay::input::pointer::CursorImageStatus;
 use smithay::input::{Seat, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::LoopSignal;
@@ -201,6 +202,8 @@ pub struct DinatorState {
     // Remote client tracking
     pub rdp_clients: u32,
     pub vnc_clients: u32,
+    /// Pending cursor image change — consumed by the render loop to send to RDP/VNC.
+    pub pending_cursor: Option<CursorImageStatus>,
 
     // XWayland
     pub xwayland_shell_state: XWaylandShellState,
@@ -275,6 +278,7 @@ impl DinatorState {
             on_clipboard_change: None,
             rdp_clipboard_text: None,
             rdp_clients: 0,
+            pending_cursor: None,
             vnc_clients: 0,
             xwayland_shell_state,
             x11_wm: None,

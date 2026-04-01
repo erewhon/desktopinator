@@ -2593,38 +2593,56 @@ fn run_headless(
                 }
             }
 
-            // Send cursor position via RDP pointer updates (not composited)
+            // Send cursor shape + position via RDP pointer updates
             if state.rdp_clients > 0 {
-                if let Some(pointer) = state.seat.get_pointer() {
-                    let pos = pointer.current_location();
-                    let cx = pos.x.max(0.0) as u16;
-                    let cy = pos.y.max(0.0) as u16;
+                // Process pending cursor shape changes
+                if let Some(cursor_status) = state.pending_cursor.take() {
+                    use smithay::input::pointer::CursorImageStatus;
 
-                    // Send default pointer shape on first cursor movement
-                    if cursor_hidden {
+                    let update = match cursor_status {
+                        CursorImageStatus::Hidden => {
+                            cursor_hidden = true;
+                            Some(ironrdp_server::DisplayUpdate::HidePointer)
+                        }
+                        CursorImageStatus::Named(_icon) => {
+                            // Named cursor — send default system pointer
+                            // TODO: render specific cursor shapes for different icons
+                            cursor_hidden = false;
+                            Some(ironrdp_server::DisplayUpdate::DefaultPointer)
+                        }
+                        CursorImageStatus::Surface(ref surface) => {
+                            // Custom cursor from Wayland client — extract RGBA pixels
+                            cursor_hidden = false;
+                            extract_cursor_surface(surface)
+                        }
+                    };
+
+                    if let Some(update) = update {
                         if let Ok(guard) = rdp_update_tx_render.try_lock() {
                             if let Some(ref tx) = *guard {
-                                let _ = tx.try_send(
-                                    ironrdp_server::DisplayUpdate::DefaultPointer,
-                                );
+                                let _ = tx.try_send(update);
                             }
                         }
-                        cursor_hidden = false;
                     }
+                }
 
-                    // Only send position if it changed
-                    if (cx, cy) != last_cursor_pos {
-                        last_cursor_pos = (cx, cy);
-                        if let Ok(guard) = rdp_update_tx_render.try_lock() {
-                            if let Some(ref tx) = *guard {
-                                let _ = tx.try_send(
-                                    ironrdp_server::DisplayUpdate::PointerPosition(
-                                        ironrdp_pdu::pointer::Point16 {
-                                            x: cx,
-                                            y: cy,
-                                        },
-                                    ),
-                                );
+                // Send cursor position
+                if !cursor_hidden {
+                    if let Some(pointer) = state.seat.get_pointer() {
+                        let pos = pointer.current_location();
+                        let cx = pos.x.max(0.0) as u16;
+                        let cy = pos.y.max(0.0) as u16;
+
+                        if (cx, cy) != last_cursor_pos {
+                            last_cursor_pos = (cx, cy);
+                            if let Ok(guard) = rdp_update_tx_render.try_lock() {
+                                if let Some(ref tx) = *guard {
+                                    let _ = tx.try_send(
+                                        ironrdp_server::DisplayUpdate::PointerPosition(
+                                            ironrdp_pdu::pointer::Point16 { x: cx, y: cy },
+                                        ),
+                                    );
+                                }
                             }
                         }
                     }
@@ -2743,7 +2761,76 @@ fn cleanup_and_exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
-/// Get the clear color for render_output based on the background config.
+/// Extract RGBA cursor bitmap from a Wayland surface set via wl_pointer.set_cursor.
+fn extract_cursor_surface(
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> Option<ironrdp_server::DisplayUpdate> {
+    use smithay::input::pointer::CursorImageSurfaceData;
+    use smithay::wayland::compositor;
+    use smithay::wayland::shm;
+
+    let result: Option<(u16, u16, Vec<u8>, u16, u16)> =
+        compositor::with_states(surface, |states| {
+            let hotspot = states
+                .data_map
+                .get::<CursorImageSurfaceData>()
+                .map(|d| {
+                    let a = d.lock().unwrap();
+                    (a.hotspot.x as u16, a.hotspot.y as u16)
+                })
+                .unwrap_or((0, 0));
+
+            let mut cached = states
+                .cached_state
+                .get::<compositor::SurfaceAttributes>();
+            let attrs = cached.current();
+
+            let buf = match &attrs.buffer {
+                Some(compositor::BufferAssignment::NewBuffer(b)) => b,
+                _ => return None,
+            };
+
+            let pixels = shm::with_buffer_contents(buf, |ptr, len, info| {
+                let data = unsafe { std::slice::from_raw_parts(ptr, len) };
+                let w = info.width as usize;
+                let h = info.height as usize;
+                let stride = info.stride as usize;
+                let mut rgba = vec![0u8; w * h * 4];
+                for y in 0..h {
+                    for x in 0..w {
+                        let src = y * stride + x * 4;
+                        let dst = (y * w + x) * 4;
+                        if src + 4 <= data.len() {
+                            rgba[dst] = data[src + 2];
+                            rgba[dst + 1] = data[src + 1];
+                            rgba[dst + 2] = data[src];
+                            rgba[dst + 3] = data[src + 3];
+                        }
+                    }
+                }
+                (rgba, w as u16, h as u16)
+            });
+
+            match pixels {
+                Ok((data, w, h)) if w > 0 && h > 0 => Some((hotspot.0, hotspot.1, data, w, h)),
+                _ => None,
+            }
+        });
+
+    match result {
+        Some((hx, hy, data, w, h)) => Some(ironrdp_server::DisplayUpdate::RGBAPointer(
+            ironrdp_server::RGBAPointer {
+                width: w,
+                height: h,
+                hot_x: hx,
+                hot_y: hy,
+                data,
+            },
+        )),
+        None => Some(ironrdp_server::DisplayUpdate::DefaultPointer),
+    }
+}
+
 pub(crate) fn background_clear_color(bg: &dinator_core::Background) -> [f32; 4] {
     match bg {
         dinator_core::Background::Solid(c) => *c,

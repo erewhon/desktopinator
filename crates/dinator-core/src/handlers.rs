@@ -648,7 +648,9 @@ impl SeatHandler for DinatorState {
         &mut self.seat_state
     }
 
-    fn cursor_image(&mut self, _seat: &Seat<Self>, _image: CursorImageStatus) {}
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.pending_cursor = Some(image);
+    }
     fn focus_changed(&mut self, _seat: &Seat<Self>, focused: Option<&WlSurface>) {
         if let Some(surface) = focused {
             if let Some(id) = self.surface_to_id.get(surface) {
