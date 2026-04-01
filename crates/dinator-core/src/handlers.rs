@@ -403,8 +403,14 @@ impl XdgShellHandler for DinatorState {
         surface.send_configure().ok();
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
-        // Popup grabs not yet supported — menus still work without grab
+    fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, serial: Serial) {
+        // Give keyboard focus to the popup so it can receive input.
+        // A full popup grab (keyboard + pointer) is needed for proper
+        // dismiss-on-click-outside behavior, but this is enough for
+        // Firefox context menus to render and accept clicks.
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, Some(surface.wl_surface().clone()), serial);
+        }
     }
 
     fn reposition_request(
