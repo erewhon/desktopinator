@@ -398,8 +398,18 @@ impl XdgShellHandler for DinatorState {
         }
     }
 
-    fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {
-        // Send the initial configure so the popup can render
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        let geo = positioner.get_geometry();
+        tracing::info!(
+            x = geo.loc.x, y = geo.loc.y,
+            w = geo.size.w, h = geo.size.h,
+            "new_popup created"
+        );
+        // Apply positioner geometry before sending configure
+        surface.with_pending_state(|state| {
+            state.geometry = positioner.get_geometry();
+            state.positioner = positioner;
+        });
         surface.send_configure().ok();
     }
 

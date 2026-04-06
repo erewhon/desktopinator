@@ -1591,6 +1591,7 @@ fn run_headless(
                         let Some(pointer) = state.seat.get_pointer() else {
                             return;
                         };
+                        tracing::info!(button, pressed, focus = ?pointer.current_focus().is_some(), "RDP mouse button");
                         let serial = SERIAL_COUNTER.next_serial();
                         let btn_state = if pressed {
                             smithay::backend::input::ButtonState::Pressed
@@ -1961,7 +1962,7 @@ fn run_headless(
     // overwhelming the DVC channel during rapid window switching
     let mut bytes_sent_window: u64 = 0;
     let mut window_start = std::time::Instant::now();
-    const MAX_BYTES_PER_SECOND: u64 = 5_000_000; // 5MB/s limit
+    const MAX_BYTES_PER_SECOND: u64 = 20_000_000; // 20MB/s limit
     // Second encoder for AVC444 chroma stream (per output)
     let mut chroma_encoders: HashMap<String, Box<dyn dinator_encode::Encoder>> = HashMap::new();
     // Reusable buffers for AVC444 YUV444 conversion
